@@ -1,0 +1,28 @@
+{
+  "discovery_principle": "Broad discovery, personalised ranking",
+  "freshness_half_life_days": 14.0,
+  "graduation_year": 2026,
+  "graduation_year_weights": {
+    "graduate_friendly": 0.8,
+    "no_year_stated": 0.8,
+    "other_year_restriction": -0.5,
+    "year_2026_accepted": 1.0,
+    "year_2027_mentioned": -0.35,
+    "year_2027_only_strict": -1.0
+  },
+  "location_mode": "london_first_uk_wide",
+  "london_preference_weight": 0.55,
+  "preferred_city": "London",
+  "primary_market": "United Kingdom",
+  "source_weights": {
+    "adzuna": 0.7,
+    "company": 1.0,
+    "greenhouse": 0.95,
+    "indeed": 0.55,
+    "lever": 0.95,
+    "linkedin": 0.6,
+    "welcome_to_the_jungle": 0.85
+  },
+  "sponsorship_mode": "all"
+}
+

@@ -1,0 +1,19 @@
+[
+  {
+    "wttj_url": "https://www.welcometothejungle.com/en/companies/example/jobs/junior-backend-engineer_london",
+    "source_job_id": "WTTJ_EXAMPLE_001",
+    "title": "Junior Backend Engineer",
+    "company": "Example Company",
+    "location": "London, United Kingdom",
+    "work_mode": "hybrid",
+    "posted_at": "2026-08-30T09:00:00+00:00",
+    "description": "Build Python APIs and maintain PostgreSQL-backed services.",
+    "requirements": "0-2 years experience. Skilled Worker visa sponsorship available. 2026 graduates welcome.",
+    "direct_apply_url": "https://example.com/jobs/junior-backend-engineer/apply",
+    "salary": "GBP 40000-50000",
+    "contract_type": "permanent",
+    "employment_type": "full_time",
+    "remote_policy": "hybrid",
+    "notes": "Fake example row only."
+  }
+]

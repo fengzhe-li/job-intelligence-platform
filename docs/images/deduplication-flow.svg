@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 460" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#6b7280"/>
+    </marker>
+  </defs>
+  <rect width="1000" height="460" fill="#ffffff"/>
+  <text x="500" y="34" text-anchor="middle" font-size="20" font-weight="700" fill="#1f2328">Layered Cross-Source Deduplication</text>
+  <text x="500" y="56" text-anchor="middle" font-size="13" fill="#6b7280">The same vacancy is often posted on a company's own ATS and on aggregators — each candidate check is tried in order</text>
+
+  <rect x="60" y="90" width="260" height="50" rx="8" fill="#eef4ff" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="190" y="120" text-anchor="middle" font-size="13" fill="#1d4ed8" font-weight="600">New job payload from a connector</text>
+
+  <path d="M320,115 L360,115" stroke="#6b7280" stroke-width="2" fill="none" marker-end="url(#arrow2)"/>
+
+  <g font-size="12.5">
+    <rect x="365" y="90" width="270" height="50" rx="8" fill="#ffffff" stroke="#9ca3af" stroke-width="1.5"/>
+    <text x="500" y="112" text-anchor="middle" fill="#374151" font-weight="600">1. Same (source_name, source_job_id)?</text>
+    <text x="500" y="128" text-anchor="middle" fill="#6b7280" font-size="10.5">Exact re-fetch of a known posting</text>
+
+    <rect x="365" y="160" width="270" height="50" rx="8" fill="#ffffff" stroke="#9ca3af" stroke-width="1.5"/>
+    <text x="500" y="182" text-anchor="middle" fill="#374151" font-weight="600">2. Same canonical application URL?</text>
+    <text x="500" y="198" text-anchor="middle" fill="#6b7280" font-size="10.5">Normalised: strip query/fragment, trailing slash</text>
+
+    <rect x="365" y="230" width="270" height="50" rx="8" fill="#ffffff" stroke="#9ca3af" stroke-width="1.5"/>
+    <text x="500" y="252" text-anchor="middle" fill="#374151" font-weight="600">3. Same company + title + location?</text>
+    <text x="500" y="268" text-anchor="middle" fill="#6b7280" font-size="10.5">Normalised strings, exact match</text>
+
+    <rect x="365" y="300" width="270" height="58" rx="8" fill="#ffffff" stroke="#9ca3af" stroke-width="1.5"/>
+    <text x="500" y="322" text-anchor="middle" fill="#374151" font-weight="600">4. Fuzzy company + title match?</text>
+    <text x="500" y="338" text-anchor="middle" fill="#6b7280" font-size="10.5">SequenceMatcher ratio &#8805; 0.88,</text>
+    <text x="500" y="352" text-anchor="middle" fill="#6b7280" font-size="10.5">same location, seniority words stripped</text>
+  </g>
+
+  <path d="M500,140 L500,160" stroke="#6b7280" stroke-width="2" fill="none" marker-end="url(#arrow2)"/>
+  <path d="M500,210 L500,230" stroke="#6b7280" stroke-width="2" fill="none" marker-end="url(#arrow2)"/>
+  <path d="M500,280 L500,300" stroke="#6b7280" stroke-width="2" fill="none" marker-end="url(#arrow2)"/>
+
+  <rect x="700" y="90" width="240" height="50" rx="8" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+  <text x="820" y="112" text-anchor="middle" fill="#047857" font-weight="600" font-size="12.5">Match found &#8594; merge</text>
+  <text x="820" y="128" text-anchor="middle" fill="#047857" font-size="10.5">into existing canonical job</text>
+
+  <rect x="700" y="330" width="240" height="50" rx="8" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="820" y="352" text-anchor="middle" fill="#b45309" font-weight="600" font-size="12.5">No match &#8594; new</text>
+  <text x="820" y="368" text-anchor="middle" fill="#b45309" font-size="10.5">canonical job created</text>
+
+  <path d="M635,115 L695,115" stroke="#10b981" stroke-width="2" fill="none" marker-end="url(#arrow2)"/>
+  <path d="M635,185 L680,185 L680,115 L695,115" stroke="#10b981" stroke-width="2" fill="none" marker-end="url(#arrow2)"/>
+  <path d="M635,255 L680,255 L680,115 L695,115" stroke="#10b981" stroke-width="2" fill="none" marker-end="url(#arrow2)"/>
+  <path d="M635,329 L680,329 L680,140 L695,127" stroke="#10b981" stroke-width="2" fill="none" marker-end="url(#arrow2)"/>
+  <path d="M635,345 L695,355" stroke="#f59e0b" stroke-width="2" fill="none" marker-end="url(#arrow2)"/>
+
+  <rect x="60" y="400" width="880" height="44" rx="8" fill="#f9fafb" stroke="#e5e7eb"/>
+  <text x="80" y="420" font-size="12.5" fill="#4b5563">On merge: source observations combine (earliest first_seen, latest last_seen); the more direct source</text>
+  <text x="80" y="436" font-size="12.5" fill="#4b5563">(company/Greenhouse/Lever/Ashby/Workable/SmartRecruiters) is preferred over aggregator-only data for display fields.</text>
+</svg>

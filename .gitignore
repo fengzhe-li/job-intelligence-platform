@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+dist/
+build/
+*.egg-info/
+.DS_Store
+.env
+.env.*
+
+# Local runtime state: real candidate profile (name, CV text, contact details),
+# raw scraped job snapshots, and processed rankings. Never publish this.
+data/local/
+
