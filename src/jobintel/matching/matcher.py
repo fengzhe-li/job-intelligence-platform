@@ -266,9 +266,10 @@ def _sponsorship_explanation(job: Job) -> str:
 def _graduation_explanation(job: Job) -> str:
     if job.graduation_year is None:
         return "No graduation-year evidence extracted"
+    intake_suffix = f" (informational: detected intake year {job.graduation_year.intake_year}, not used for eligibility)" if job.graduation_year.intake_year else ""
     if job.graduation_year.evidence_text:
-        return f"Graduation year: {job.graduation_year.state.value} from '{job.graduation_year.evidence_text}'"
-    return f"Graduation year: {job.graduation_year.state.value}"
+        return f"Graduation year: {job.graduation_year.state.value} from '{job.graduation_year.evidence_text}'{intake_suffix}"
+    return f"Graduation year: {job.graduation_year.state.value}{intake_suffix}"
 
 
 def _experience_explanation(experience) -> str:

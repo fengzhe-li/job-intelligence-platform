@@ -1,0 +1,210 @@
+schema_version: '1.0'
+source_asset: data/policies/sources/cv_tailoring_skill_v1_source.md
+source_hash: 0d1136a9f2f532b6a9f4cb1ca3202d3e281c59fa8ec224e6e7ea06ee890167cf
+transformation_version: '1.0'
+CV_TAILORING_SKILL_V1:
+  objective:
+    create: one-page JD-tailored technical CV
+    method: select and reframe verified evidence
+    prohibition: never create stronger evidence through wording
+  precedence:
+  - evidence_truth
+  - jd_relevance
+  - evidence_strength
+  - recruiter_clarity
+  - non_redundancy
+  - one_page_readability
+  confidence: HIGH
+  evidence_policy:
+    immutable_source_of_truth: true
+    statuses:
+    - verified
+    - partial
+    - missing
+    rules:
+    - Tailoring may narrow evidence, never strengthen it.
+    - Missing JD skills remain gaps.
+    - Partial evidence must not be rewritten as expertise.
+    - Preserve qualifiers required for claim truthfulness.
+    - Planned work is not completed evidence.
+  project_selection:
+    normal_count: 3-4
+    fixed_quota: false
+    rank_by:
+    - jd_relevance
+    - evidence_strength
+    - recruiter_interpretability
+    tie_breaker:
+    - non_redundancy
+    rules:
+    - No globally fixed project ranking.
+    - Technical complexity alone does not determine rank.
+    - Do not add irrelevant projects for variety.
+    - Use fewer projects if the next project is weak or irrelevant.
+    - A project may move from flagship to supporting or be omitted across JDs.
+  project_positioning:
+    rule: 'Select truthful aspects of the project that prove the target capability;
+      do not change what the project actually was.
+
+      '
+    observed_transforms:
+      backend_general_swe:
+        emphasise:
+        - services
+        - APIs
+        - persistence
+        - application_logic
+        - data_integrity
+        - testing
+        confidence: HIGH
+      fullstack:
+        emphasise:
+        - end_to_end_application_flow
+        - frontend_backend_boundary
+        - persistence
+        - testing
+        - delivery_lifecycle
+        confidence: HIGH
+      platform_cloud_systems:
+        emphasise:
+        - Linux
+        - networking
+        - automation
+        - containers
+        - failure_behaviour
+        - infrastructure
+        - reproducibility
+        guardrail: Do not manufacture HPC/SRE/production operations experience.
+        confidence: HIGH
+      ai_applied_ai:
+        emphasise:
+        - AI_system_architecture
+        - orchestration
+        - evaluation
+        - deterministic_controls
+        - failure_handling
+        - evidence_boundaries
+        guardrail: Model/API presence alone is not the achievement.
+        confidence: HIGH
+      fintech:
+        emphasise:
+        - relevant_domain_context
+        - correctness
+        - traceability
+        - software_engineering
+        - AI_or_data_controls_when_evidenced
+        guardrail: Financial-domain software does not imply finance expertise.
+        confidence: MEDIUM_HIGH
+      motorsport:
+        emphasise:
+        - JD_relevant_engineering
+        - modelling_or_systems_or_data_as_supported
+        - reproducibility
+        - validation
+        guardrail: Domain relevance cannot compensate for weak technical evidence.
+        confidence: HIGH
+  bullet_selection:
+    select_when:
+    - fact proves a target-role capability
+    - fact demonstrates a meaningful engineering mechanism
+    - fact provides strong validation
+    - metric materially strengthens a scoped claim
+    reject_when:
+    - fact is merely incidental
+    - fact duplicates stronger evidence
+    - fact requires exaggeration to sound relevant
+    allocation:
+      equal_across_projects: false
+      flagship_can_receive_more: true
+      exact_pattern_fixed: false
+    validation:
+      preserve_high_value_testing: true
+  metric_policy:
+    require:
+    - provenance
+    - correct_definition
+    - scope
+    reject:
+    - invented_metric
+    - relabelled_metric
+    - synthetic_as_real_world
+    - unsupported_generalisation
+    rule: Never remove a qualifier if doing so materially strengthens the claim.
+  bullet_style:
+    prefer:
+    - concrete_action
+    - concrete_object
+    - engineering_mechanism
+    - scoped_result
+    avoid:
+    - generic_responsibility_language
+    - unsupported_prestige_adjectives
+    - inflated_ownership
+    - inflated_seniority
+    rule: 'Technical specificity should make the bullet impressive; adjectives should
+      not substitute for evidence.
+
+      '
+  skills_policy:
+    canonical_skills_are_evidence_backed: true
+    rendered_order_is_JD_specific: true
+    alphabetical_order_required: false
+    missing_skill:
+      render: false
+      record_as_gap: true
+    partial_skill:
+      human_review: true
+      may_render: only when defensible
+      must_not_imply_expertise: true
+    keyword_stuffing: prohibited
+  layout_policy:
+    target_pages: 1
+    overflow_strategy:
+    - remove_redundancy
+    - compress_low_value_wording
+    - reduce_low_value_bullets
+    - remove_low_priority_project_or_skill
+    - human_adjust_layout
+    avoid:
+    - readability_damage
+    - unnecessary_font_shrinking
+    - visually_unattractive_automatic_compression
+    rule: Preserve strong evidence before weak content.
+  anti_patterns:
+  - unsupported_JD_keywords
+  - fabricated_metrics
+  - planned_as_completed
+  - prototype_as_production
+  - synthetic_as_real_world
+  - unsupported_scale_claims
+  - inflated_ownership
+  - inflated_seniority
+  - irrelevant_project_for_variety
+  - globally_fixed_project_order
+  - equal_bullet_allocation_by_default
+  - keyword_stuffing
+  - removing_material_claim_qualifiers
+  human_review:
+    mandatory_for:
+    - final_project_selection
+    - final_project_order
+    - new_or_rewritten_claims
+    - metrics
+    - evidence_boundary_changes
+    - partial_skill_inclusion
+    - ownership_wording
+    - final_one_page_visual_output
+    - final_submission
+    automation_may:
+    - parse_JD
+    - retrieve_evidence
+    - classify_verified_partial_missing
+    - recommend_projects
+    - recommend_project_order
+    - select_candidate_evidence
+    - draft_grounded_bullets
+    - reorder_verified_skills
+    - detect_unsupported_claims
+    - generate_CV
+    - check_page_count
+    submission_without_review: false

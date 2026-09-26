@@ -5,9 +5,9 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 
-from jobintel.models.job import Job, SourceObservation
+from jobintel.models.job import DIRECT_ATS_SOURCES, Job, SourceObservation
 
-DIRECT_SOURCES = {"company", "greenhouse", "lever", "ashby", "workable", "smartrecruiters"}
+DIRECT_SOURCES = DIRECT_ATS_SOURCES
 
 
 def deduplicate_jobs(jobs: list[Job]) -> list[Job]:
@@ -22,17 +22,38 @@ def deduplicate_jobs(jobs: list[Job]) -> list[Job]:
     return canonical
 
 
+def find_match(candidates: list[Job], job: Job) -> Job | None:
+    """The existing canonical job `job` would merge into under the current
+    rules, if any (public, read-only use of the same matcher)."""
+    return _find_match(candidates, job)
+
+
 def _find_match(candidates: list[Job], job: Job) -> Job | None:
     for candidate in candidates:
         if _same_source_id(candidate, job):
             return candidate
         if _same_application_url(candidate, job):
             return candidate
+        if _distinct_postings_of_one_source(candidate, job):
+            # The same source lists these under different ids: they are two
+            # postings (e.g. two teams hiring the same title in one city),
+            # and merging them by title heuristics would hide a real vacancy.
+            continue
         if _same_company_title_location(candidate, job):
             return candidate
         if _fuzzy_company_title(candidate, job):
             return candidate
     return None
+
+
+def _distinct_postings_of_one_source(a: Job, b: Job) -> bool:
+    ids_a: dict[str, set[str]] = {}
+    for observation in a.source_observations:
+        ids_a.setdefault(observation.source_name, set()).add(observation.source_job_id)
+    for observation in b.source_observations:
+        if observation.source_name in ids_a and observation.source_job_id not in ids_a[observation.source_name]:
+            return True
+    return False
 
 
 def _same_source_id(a: Job, b: Job) -> bool:
@@ -52,6 +73,8 @@ def _same_company_title_location(a: Job, b: Job) -> bool:
         return False
     if _norm_title(a.title) != _norm_title(b.title):
         return False
+    if _seniority_markers(a.title) != _seniority_markers(b.title):
+        return False
     return bool(_location_keys(a) & _location_keys(b))
 
 
@@ -59,6 +82,8 @@ def _fuzzy_company_title(a: Job, b: Job) -> bool:
     if _norm(a.company) != _norm(b.company):
         return False
     if not (_location_keys(a) & _location_keys(b)):
+        return False
+    if _seniority_markers(a.title) != _seniority_markers(b.title):
         return False
     return SequenceMatcher(None, _norm_title(a.title), _norm_title(b.title)).ratio() >= 0.88
 
@@ -72,6 +97,9 @@ def _merge(a: Job, b: Job) -> Job:
         id=a.id,
         locations=locations,
         source_observations=observations,
+        # A direct ATS observation's full JD wins; never replace it with
+        # nothing if the preferred record happens to lack one.
+        description=preferred.description or a.description or b.description,
         salary=preferred.salary or a.salary or b.salary,
         raw_location=preferred.raw_location or a.raw_location or b.raw_location,
     )
@@ -122,6 +150,23 @@ def _canonical_url(url: str) -> str:
 
 def _norm(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", value.casefold())
+
+
+# `_norm_title` strips seniority words so wording variants of ONE vacancy
+# match ("Graduate Software Engineer" / "Software Engineer - Graduate
+# Programme"). But seniority itself distinguishes vacancies: "Junior X" and
+# "Senior X" at the same company and city are two roles, and merging them can
+# hide the graduate one behind the senior title (live-observed: Ilmor "DESIGN
+# ENGINEER" + "SENIOR DESIGN ENGINEER", TransFICC junior/mid/senior). Heuristic
+# title matching therefore also requires the same set of seniority markers.
+_SENIORITY_MARKER = re.compile(
+    r"\b(graduate|grad|junior|jr|entry|intern|internship|placement|apprentice|apprenticeship|trainee|associate|mid|senior|sr|staff|lead|principal|head|ii|iii|iv)\b"
+)
+_MARKER_ALIASES = {"grad": "graduate", "jr": "junior", "sr": "senior", "internship": "intern", "apprenticeship": "apprentice"}
+
+
+def _seniority_markers(value: str) -> frozenset[str]:
+    return frozenset(_MARKER_ALIASES.get(marker, marker) for marker in _SENIORITY_MARKER.findall(value.casefold()))
 
 
 def _norm_title(value: str) -> str:

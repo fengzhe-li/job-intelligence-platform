@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from jobintel.connectors.base import ConnectorQuery, JobSourceConnector, RawJobPayload, SourceHealth
-from jobintel.connectors.utils import build_url, fetch_json, normalise_location, now_utc, parse_datetime, strip_html
+from jobintel.connectors.base import ConnectorQuery, JobSourceConnector, RawJobPayload, ScopeCollector, SourceHealth, SourceSnapshot
+from jobintel.connectors.utils import build_url, fetch_json, normalise_location, now_utc, parse_datetime, strip_html, text_or_none
 from jobintel.models.job import Job, SourceObservation
 
 
@@ -14,20 +14,41 @@ class LeverConnector(JobSourceConnector):
         self.sites = sites
         self.base_url = "https://jobs.eu.lever.co" if eu else "https://api.lever.co"
 
+    supports_closure_inference = True
+
     def fetch_jobs(self, query: ConnectorQuery) -> list[RawJobPayload]:
+        return self.fetch_snapshot(query).payloads_or_raise()
+
+    def fetch_snapshot(self, query: ConnectorQuery) -> SourceSnapshot:
+        # One site = one closure scope. The postings endpoint is requested
+        # WITHOUT a `limit` parameter so it returns the site's full listing --
+        # previously `limit=query.limit` was sent to the API itself, so any
+        # site with more postings than the limit was silently cut server-side
+        # and then treated as complete. The per-site cap is applied locally
+        # by ScopeCollector, which marks a truncated site incomplete.
         observed_at = now_utc()
-        jobs: list[RawJobPayload] = []
+        collector = ScopeCollector(query)
         for site in self.sites:
-            url = build_url(f"{self.base_url}/v0/postings/{site}", {"mode": "json", "limit": query.limit})
-            payload = fetch_json(url)
+            try:
+                url = build_url(f"{self.base_url}/v0/postings/{site}", {"mode": "json"})
+                payload = fetch_json(url)
+            except Exception as exc:
+                collector.fail(site, site, f"{type(exc).__name__}: {exc}")
+                continue
+            if not isinstance(payload, list):
+                collector.fail(site, site, f"unexpected response shape: {type(payload).__name__}")
+                continue
+            listed: list[RawJobPayload] = []
+            filtered_out = 0
             for item in payload:
                 if not isinstance(item, dict):
                     continue
                 if not _is_relevant(item, query):
+                    filtered_out += 1
                     continue
                 source_id = str(item.get("id") or item.get("hostedUrl") or item.get("applyUrl") or item.get("text") or "unknown")
                 source_url = item.get("hostedUrl") or item.get("applyUrl") or f"https://jobs.lever.co/{site}/{source_id}"
-                jobs.append(
+                listed.append(
                     RawJobPayload(
                         source_name=self.source_name,
                         source_job_id=source_id,
@@ -38,7 +59,11 @@ class LeverConnector(JobSourceConnector):
                         posted_at=parse_datetime(item.get("createdAt")),
                     )
                 )
-        return jobs[: query.limit]
+            collector.add_scope(site, listed, filtered_out=filtered_out)
+        return collector.snapshot()
+
+    def closure_scope(self, raw_payload: dict[str, Any]) -> str | None:
+        return super().closure_scope(raw_payload) or text_or_none(raw_payload.get("_site"))
 
     def health_check(self) -> SourceHealth:
         if not self.sites:

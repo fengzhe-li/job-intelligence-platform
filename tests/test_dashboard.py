@@ -10,7 +10,8 @@ from unittest.mock import patch
 from jobintel.analysis.job_enrichment import enrich_job
 from jobintel.dashboard.i18n import labels
 from jobintel.dashboard.server import _refresh_redirect, _render_dashboard, _render_detail, _run_dashboard_refresh, _save_dashboard_search
-from jobintel.dashboard.service import DashboardFilters, build_dashboard_model, build_job_detail_model, filters_from_params, is_new_today, saved_searches, save_search, update_workflow_status
+from jobintel.dashboard.service import DashboardFilters, build_dashboard_model, build_job_detail_model, filters_from_params, is_new_today, saved_searches, save_search, update_workflow_status, read_jobs_with_lifecycle
+from jobintel.storage.application_store import ApplicationStore
 from jobintel.models.job import Job, Location, SourceObservation
 from jobintel.models.taxonomy import LocationMode, RoleTrack, SponsorshipFilterMode, SponsorshipState, WorkflowStatus, WorkMode
 from jobintel.storage.local_store import LocalJobStore
@@ -52,9 +53,14 @@ class DashboardTests(unittest.TestCase):
             store.write_jobs([enrich_job(_job("job-1", "Backend Engineer", "Demo", self.now, "ashby", "Python APIs."), 2026)])
 
             update_workflow_status("job-1", WorkflowStatus.APPLIED.value, store)
-            jobs = store.read_jobs()
+            jobs = read_jobs_with_lifecycle(store)
+            application = ApplicationStore(store.root).for_job("job-1")
 
+        # Post-submission status is owned by ApplicationStore
+        # (application_lifecycle), not stored in workflow_status.json.
         self.assertEqual(jobs[0].workflow_status, WorkflowStatus.APPLIED)
+        self.assertIsNotNone(application)
+        self.assertTrue(application.is_submitted)
 
     def test_bilingual_labels_are_available(self) -> None:
         self.assertEqual(labels("en")["daily_shortlist"], "Daily Shortlist")
@@ -203,7 +209,7 @@ class DashboardTests(unittest.TestCase):
             store = LocalJobStore(tmp)
             new_job = enrich_job(_job("new", "Backend Engineer", "Demo", self.now, "lever", "Python APIs.", state="NEW"), 2026)
             unchanged = enrich_job(_job("old", "Backend Engineer", "Demo", self.now, "lever", "Python APIs.", state="UNCHANGED"), 2026)
-            store.write_jobs([new_job, unchanged], mark_missing_inactive=False)
+            store.write_jobs([new_job, unchanged])
 
             model = build_dashboard_model(store=store, filters=DashboardFilters(freshness_window="new_since_last_refresh"), now=self.now)
 
@@ -237,9 +243,9 @@ class DashboardTests(unittest.TestCase):
             store.write_jobs([enrich_job(_job("job-1", "Backend Engineer", "Demo", self.now, "lever", "Python APIs."), 2026)])
             update_workflow_status("job-1", WorkflowStatus.APPLIED.value, store)
             refreshed = enrich_job(_job("job-1", "Backend Engineer", "Demo", self.now + timedelta(hours=1), "lever", "Python APIs.", state="UNCHANGED"), 2026)
-            store.write_jobs([refreshed], refreshed_sources={"lever"})
+            store.write_jobs([refreshed])
 
-            jobs = store.read_jobs()
+            jobs = read_jobs_with_lifecycle(store)
 
         self.assertEqual(jobs[0].workflow_status, WorkflowStatus.APPLIED)
 
@@ -300,7 +306,8 @@ class DashboardTests(unittest.TestCase):
             html = _render_dashboard(model)
 
         self.assertIn("每日候选清单", html)
-        self.assertIn("刷新岗位", html)
+        self.assertIn("运行每日刷新（全部来源）", html)
+        self.assertIn("仅ATS刷新", html)
         self.assertIn("本次刷新新增", html)
         self.assertIn("岗位方向", html)
         self.assertIn("新增", html)
@@ -369,7 +376,10 @@ class DashboardTests(unittest.TestCase):
             html = _render_dashboard(model)
 
         self.assertIn("Daily Shortlist", html)
-        self.assertIn("Refresh Jobs", html)
+        # The primary refresh is the Phase 3 daily refresh; the ATS-only one is
+        # explicitly labelled -- never two identical "Refresh" buttons.
+        self.assertIn('action="/daily-refresh?lang=en"><button type="submit">Run Daily Refresh (all sources)</button>', html)
+        self.assertIn('action="/refresh?lang=en"><button type="submit" class="secondary">ATS-only refresh (registry company boards only)</button>', html)
         self.assertIn("Apply Filters", html)
 
 

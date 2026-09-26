@@ -1,5 +1,7 @@
 # Sources
 
+For per-source automation status, live-testing evidence, and honest coverage classification (`PRODUCTION_READY` / `PARTIAL_COVERAGE` / `MANUAL_FALLBACK_ONLY` / `BROKEN_OR_UNAVAILABLE`) across all 11 sources this project touches, see [docs/SOURCE_COVERAGE.md](SOURCE_COVERAGE.md) -- this document covers *access method and compliance assumption* per source; that one covers *does it actually work, and how much of the source does it actually see*.
+
 ## Supported Sources
 
 ### Greenhouse
@@ -54,6 +56,7 @@ Limitations:
 - Requires `ADZUNA_APP_ID` and `ADZUNA_APP_KEY`.
 - Redirect URLs may point through Adzuna rather than the direct employer ATS.
 - Results depend on Adzuna query behavior and API limits.
+- Paginates up to 20 pages / ~1000 results per refresh (Phase 2.6), cross-page deduplicated; stops after 3 consecutive page failures rather than continuing to hammer a rate-limited API. Credentials are not available in this project's development environment, so this was validated with 9 mocked unit tests (`tests/test_adzuna_pagination.py`), not a live multi-page run.
 
 ### Welcome to the Jungle
 
@@ -74,6 +77,27 @@ Limitations:
 - Manual imports can preserve WTTJ URLs and source identity, but richer matching depends on supplied title, company, location, and description fields.
 
 See `docs/WTTJ_INTEGRATION.md` for commands and fallback format.
+
+### Prospects
+
+Access method: public schema.org `JobPosting` JSON-LD structured data, embedded in server-rendered job detail pages -- the same data the site publishes for Google for Jobs indexing, fetched via plain HTTP GET. Not a hidden/private API.
+
+Endpoint shape:
+
+```text
+GET https://www.prospects.ac.uk/browse-graduate-jobs/{category-slug}/all-locations   # listing
+GET https://www.prospects.ac.uk/graduate-jobs/{job-slug}-{id}                        # detail (redirects; JSON-LD in <head>)
+```
+
+Compliance assumption: fetching a public HTML page and reading its own publicly-embedded, search-engine-facing structured data is not scraping in the sense this project avoids elsewhere (no parsing of arbitrary/private markup, no bypassing any access control). Confirmed no CAPTCHA/Cloudflare-challenge on these paths during the Phase 2.5 audit (unlike Gradcracker/Bright Network, which are and are therefore not touched).
+
+Limitations:
+
+- No credentials required, no known-company list required (category-based, not company-scoped).
+- Only IT and Engineering-and-manufacturing categories configured by default -- Phase 2.6 re-audited all 29 of Prospects' own sector categories against this project's target role families and confirmed these two are the correct/sufficient ones (no dedicated AI/ML/telecoms/embedded/motorsport category exists on Prospects).
+- No pagination mechanism found on listing pages after live re-investigation (`?page=2` returns byte-identical content to page 1, no total-count text, no listings-API reference) -- treated as the full per-category listing, though a client-side-only mechanism a plain HTTP GET can't observe can't be fully ruled out.
+
+See `docs/GRADUATE_SOURCES.md` and `docs/SOURCE_COVERAGE.md` for the full audit and commands.
 
 ## Not Implemented
 

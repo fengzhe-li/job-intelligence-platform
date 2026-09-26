@@ -3,8 +3,8 @@ from __future__ import annotations
 import urllib.parse
 from typing import Any
 
-from jobintel.connectors.base import ConnectorQuery, JobSourceConnector, RawJobPayload, SourceHealth
-from jobintel.connectors.utils import fetch_json, normalise_location, now_utc, parse_datetime, strip_html
+from jobintel.connectors.base import ConnectorQuery, JobSourceConnector, RawJobPayload, ScopeCollector, SourceHealth, SourceSnapshot
+from jobintel.connectors.utils import fetch_json, normalise_location, now_utc, parse_datetime, strip_html, text_or_none
 from jobintel.models.job import Job, SourceObservation
 
 
@@ -14,20 +14,37 @@ class AshbyConnector(JobSourceConnector):
     def __init__(self, board_names: tuple[str, ...]) -> None:
         self.board_names = board_names
 
+    supports_closure_inference = True
+
     def fetch_jobs(self, query: ConnectorQuery) -> list[RawJobPayload]:
+        return self.fetch_snapshot(query).payloads_or_raise()
+
+    def fetch_snapshot(self, query: ConnectorQuery) -> SourceSnapshot:
+        # One job board = one closure scope; the posting API returns the
+        # board's full listing in a single response.
         observed_at = now_utc()
-        jobs: list[RawJobPayload] = []
+        collector = ScopeCollector(query)
         for board_name in self.board_names:
             encoded = urllib.parse.quote(board_name, safe="")
-            url = f"https://api.ashbyhq.com/posting-api/job-board/{encoded}?includeCompensation=true"
-            payload = fetch_json(url)
+            try:
+                url = f"https://api.ashbyhq.com/posting-api/job-board/{encoded}?includeCompensation=true"
+                payload = fetch_json(url)
+            except Exception as exc:
+                collector.fail(board_name, board_name, f"{type(exc).__name__}: {exc}")
+                continue
+            if not (isinstance(payload, dict) and isinstance(payload.get("jobs"), list)):
+                collector.fail(board_name, board_name, "unexpected response shape: no `jobs` list")
+                continue
+            listed: list[RawJobPayload] = []
+            filtered_out = 0
             for item in _jobs(payload):
                 if not _is_relevant(item, query):
+                    filtered_out += 1
                     continue
                 source_id = str(item.get("id") or item.get("jobId") or item.get("title") or "unknown")
                 source_url = _first_text(item.get("jobUrl"), item.get("url"), f"https://jobs.ashbyhq.com/{encoded}/{source_id}")
                 apply_url = _first_text(item.get("applicationUrl"), item.get("applyUrl"), source_url)
-                jobs.append(
+                listed.append(
                     RawJobPayload(
                         source_name=self.source_name,
                         source_job_id=source_id,
@@ -38,7 +55,11 @@ class AshbyConnector(JobSourceConnector):
                         posted_at=parse_datetime(item.get("publishedAt") or item.get("publishedDate") or item.get("createdAt") or item.get("updatedAt")),
                     )
                 )
-        return jobs[: query.limit]
+            collector.add_scope(board_name, listed, filtered_out=filtered_out)
+        return collector.snapshot()
+
+    def closure_scope(self, raw_payload: dict[str, Any]) -> str | None:
+        return super().closure_scope(raw_payload) or text_or_none(raw_payload.get("_board_name"))
 
     def health_check(self) -> SourceHealth:
         if not self.board_names:

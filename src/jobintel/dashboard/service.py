@@ -4,14 +4,19 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from jobintel.application_lifecycle import overlay_lifecycle, set_job_status
 from jobintel.analysis.job_quality import extract_required_experience, extract_seniority
 from jobintel.config import RankingConfig, load_ranking_config
 from jobintel.dashboard.i18n import labels
 from jobintel.matching.matcher import MatchComponent, MatchResult
+from jobintel.matching.project_selection import score_projects_for_job, select_top_projects
+from jobintel.models.application import Application
+from jobintel.models.candidate import CandidateProfile
 from jobintel.models.job import Job
 from jobintel.models.taxonomy import LocationMode, RoleTrack, SponsorshipFilterMode, SponsorshipState, WorkflowStatus
 from jobintel.pipeline.ingestion import RankedJob, rank_jobs
 from jobintel.profile_ingestion import load_candidate_profile
+from jobintel.storage.application_store import ApplicationStore
 from jobintel.storage.local_store import LocalJobStore
 
 
@@ -30,6 +35,11 @@ class DashboardFilters:
     freshness_window: str | None = None
     new_today: bool = False
     limit: int = 50
+    # priority (default) | deadline | first_seen | last_seen | company
+    sort: str = "priority"
+
+
+SORT_OPTIONS = ("priority", "deadline", "first_seen", "last_seen", "company")
 
 
 PRESETS = {
@@ -71,6 +81,7 @@ def filters_from_params(params: dict[str, str]) -> DashboardFilters:
         freshness_window=params.get("freshness_window") or base.freshness_window,
         new_today=_bool_param(params.get("new_today"), base.new_today),
         limit=limit,
+        sort=params.get("sort") if params.get("sort") in SORT_OPTIONS else base.sort,
     )
 
 
@@ -86,9 +97,12 @@ def build_dashboard_model(
     filters = filters or DashboardFilters()
     now = now or datetime.now(timezone.utc)
     candidate = load_candidate_profile(store.root)
-    ranked = rank_jobs(store.read_jobs(), candidate=candidate, config=replace(config, location_mode=filters.location_mode), now=now)
-    filtered = [item for item in ranked if _passes_dashboard_filters(item, filters, now)]
-    cards = [job_card(item, now) for item in filtered[: filters.limit]]
+    ranked = rank_jobs(read_jobs_with_lifecycle(store), candidate=candidate, config=replace(config, location_mode=filters.location_mode), now=now)
+    filtered = _sorted(
+        [item for item in ranked if _passes_dashboard_filters(item, filters, now)], filters.sort
+    )
+    applications = _applications_by_job(store)
+    cards = [job_card(item, now, candidate=candidate, application=applications.get(item.job.id)) for item in filtered[: filters.limit]]
     refresh_summary = _refresh_summary_model(store, ranked, now)
     return {
         "labels": labels(lang),
@@ -115,6 +129,7 @@ def build_dashboard_model(
             "seniorities": sorted({extract_seniority(item.job.title, item.job.description).level for item in ranked}),
             "enrichment_states": ["discovery_only", "partially_enriched", "fully_enriched"],
             "freshness_windows": ["", "new_since_last_refresh", "new_today", "seen_24h", "seen_7d"],
+            "sorts": list(SORT_OPTIONS),
         },
         "source_health": _source_health_model(store, ranked),
         "refresh_summary": refresh_summary,
@@ -127,11 +142,11 @@ def build_job_detail_model(job_id: str, store: LocalJobStore | None = None, conf
     config = config or load_ranking_config()
     now = now or datetime.now(timezone.utc)
     candidate = load_candidate_profile(store.root)
-    ranked = rank_jobs(store.read_jobs(), candidate=candidate, config=config, now=now)
+    ranked = rank_jobs(read_jobs_with_lifecycle(store), candidate=candidate, config=config, now=now)
     item = next((ranked_item for ranked_item in ranked if ranked_item.job.id == job_id), None)
     if item is None:
         raise KeyError(job_id)
-    card = job_card(item, now)
+    card = job_card(item, now, candidate=candidate, application=_applications_by_job(store).get(job_id))
     seniority = extract_seniority(item.job.title, item.job.description)
     experience = extract_required_experience(item.job.title, item.job.description)
     return {
@@ -175,9 +190,12 @@ def build_job_detail_model(job_id: str, store: LocalJobStore | None = None, conf
     }
 
 
-def job_card(item: RankedJob, now: datetime) -> dict[str, Any]:
+def job_card(item: RankedJob, now: datetime, candidate: CandidateProfile | None = None, application: Application | None = None) -> dict[str, Any]:
     job = item.job
     match = item.match
+    last_seen = max((observation.last_seen_at for observation in job.source_observations), default=None)
+    deadline = job.earliest_deadline
+    graduation = job.graduation_year
     seniority = extract_seniority(job.title, job.description)
     first_seen = min((observation.first_seen_at for observation in job.source_observations), default=None)
     source_names = sorted({observation.source_name for observation in job.source_observations})
@@ -211,12 +229,51 @@ def job_card(item: RankedJob, now: datetime) -> dict[str, Any]:
         "ranking_explanation": match.explanation,
         "application_url": job.canonical_application_url,
         "workflow_status": job.workflow_status.value,
+        "last_seen_at": last_seen.isoformat() if last_seen else "unknown",
+        # Unknown stays unknown -- never a guessed or default date.
+        "deadline": deadline.isoformat() if deadline else None,
+        "deadline_conflict": job.deadline_conflict,
+        "deadline_observations": {source: value.isoformat() for source, value in job.deadline_observations.items()},
+        "graduation_year_evidence": graduation.evidence_text if graduation else "",
+        "intake_year": graduation.intake_year if graduation else None,
+        "eligibility": [f"{evidence.label}: {evidence.evidence_text}" for evidence in job.eligibility],
+        "matched_projects": _matched_projects(job, candidate),
+        "application_id": application.id if application else None,
+        "application_status": application.status.value if application else None,
         "new_today": is_new_today(job, now),
         "latest_observed_state": latest_observed_state(job),
         "is_active": _is_active(job),
         "english_summary": _english_summary(job, match),
         "chinese_summary": _chinese_summary(job, match, seniority.level),
     }
+
+
+def _matched_projects(job: Job, candidate: CandidateProfile | None, limit: int = 3) -> list[str]:
+    """Top evidence-grounded project matches (same scorer the CV engine uses)."""
+    if candidate is None or not candidate.projects:
+        return []
+    matches = select_top_projects(score_projects_for_job(job, candidate), max_projects=limit)
+    return [f"{match.project.name} ({', '.join(match.matched_requirements[:3]) or 'role relevance'})" for match in matches]
+
+
+def _applications_by_job(store: LocalJobStore) -> dict[str, Application]:
+    return {application.job_id: application for application in ApplicationStore(store.root).read_applications()}
+
+
+def _sorted(items: list[RankedJob], sort: str) -> list[RankedJob]:
+    far = datetime.max.replace(tzinfo=timezone.utc)
+    old = datetime.min.replace(tzinfo=timezone.utc)
+    if sort == "deadline":
+        # Known deadlines soonest-first; unknown deadlines after, never
+        # treated as a date.
+        return sorted(items, key=lambda item: (item.job.earliest_deadline is None, item.job.earliest_deadline or far))
+    if sort == "first_seen":
+        return sorted(items, key=lambda item: min((o.first_seen_at for o in item.job.source_observations), default=old), reverse=True)
+    if sort == "last_seen":
+        return sorted(items, key=lambda item: max((o.last_seen_at for o in item.job.source_observations), default=old), reverse=True)
+    if sort == "company":
+        return sorted(items, key=lambda item: (item.job.company.casefold(), -item.match.overall_priority))
+    return items  # already priority-ranked
 
 
 def is_new_today(job: Job, now: datetime) -> bool:
@@ -235,6 +292,8 @@ def source_display_label(source_name: str) -> str:
         "workable": "Workable",
         "smartrecruiters": "SmartRecruiters",
         "adzuna": "Adzuna",
+        "workday": "Workday",
+        "prospects": "Prospects",
         "company": "Company",
     }
     return labels_by_source.get(source_name, source_name)
@@ -263,9 +322,17 @@ def enrichment_label(state: str) -> str:
     }.get(state, state)
 
 
+def read_jobs_with_lifecycle(store: LocalJobStore) -> list[Job]:
+    """Jobs with `workflow_status` projected through the single ownership
+    rule (application_lifecycle): a submitted application's status wins."""
+    return overlay_lifecycle(store.read_jobs(), ApplicationStore(store.root))
+
+
 def update_workflow_status(job_id: str, status: str, store: LocalJobStore | None = None) -> None:
+    """Routes through application_lifecycle.set_job_status: triage values go
+    to the workflow store, post-submission values to ApplicationStore."""
     store = store or LocalJobStore()
-    store.set_workflow_status(job_id, WorkflowStatus(status))
+    set_job_status(job_id, WorkflowStatus(status), store, ApplicationStore(store.root))
 
 
 def save_search(name: str, filters: DashboardFilters, store: LocalJobStore | None = None) -> None:
@@ -325,6 +392,8 @@ def filters_to_params(filters: DashboardFilters) -> dict[str, str]:
         params["freshness_window"] = filters.freshness_window
     if filters.new_today:
         params["new_today"] = "1"
+    if filters.sort != "priority":
+        params["sort"] = filters.sort
     return params
 
 
@@ -451,13 +520,18 @@ def _source_health_model(store: LocalJobStore, ranked: list[RankedJob]) -> dict[
             "jobs_seen": payload.get("jobs_seen", 0),
             "state_counts": payload.get("state_counts", {}),
             "last_error": payload.get("last_error") or "",
+            "warning": payload.get("warning") or "",
+            "failed_identifiers": payload.get("failed_identifiers") or {},
         }
     return health
 
 
 def _refresh_summary_model(store: LocalJobStore, ranked: list[RankedJob], now: datetime) -> dict[str, Any]:
     summary = store.read_refresh_summary()
-    state_counts = summary.get("state_counts") if isinstance(summary.get("state_counts"), dict) else {}
+    # Prefer the per-refresh deltas (what the last refresh actually changed);
+    # fall back to the legacy cumulative counts for summaries written before
+    # deltas existed.
+    state_counts = summary.get("delta_counts") if isinstance(summary.get("delta_counts"), dict) else summary.get("state_counts") if isinstance(summary.get("state_counts"), dict) else {}
     last_successful = _last_successful_refresh(store.read_source_health())
     return {
         "status": summary.get("status", "never"),
@@ -491,6 +565,7 @@ def _source_status_label(status: str) -> str:
         "auth_required": "Auth required",
         "manual_only": "Manual only",
         "error": "Error",
+        "partial": "Partial (coverage incomplete)",
     }.get(status, status)
 
 

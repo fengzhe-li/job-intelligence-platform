@@ -1,56 +1,73 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 460" font-family="Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 560" font-family="Helvetica, Arial, sans-serif">
   <defs>
-    <marker id="arrow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="#6b7280"/>
     </marker>
   </defs>
-  <rect width="1000" height="460" fill="#ffffff"/>
-  <text x="500" y="34" text-anchor="middle" font-size="20" font-weight="700" fill="#1f2328">Layered Cross-Source Deduplication</text>
-  <text x="500" y="56" text-anchor="middle" font-size="13" fill="#6b7280">The same vacancy is often posted on a company's own ATS and on aggregators — each candidate check is tried in order</text>
+  <rect width="1080" height="560" fill="#ffffff"/>
+  <text x="540" y="34" text-anchor="middle" font-size="20" font-weight="700" fill="#1f2328">Layered Cross-Source Deduplication</text>
+  <text x="540" y="56" text-anchor="middle" font-size="13" fill="#6b7280">jobintel.dedup.v1 — the same vacancy often appears on an employer's ATS and on aggregators; checks run in order</text>
 
-  <rect x="60" y="90" width="260" height="50" rx="8" fill="#eef4ff" stroke="#3b82f6" stroke-width="1.5"/>
-  <text x="190" y="120" text-anchor="middle" font-size="13" fill="#1d4ed8" font-weight="600">New job payload from a connector</text>
-
-  <path d="M320,115 L360,115" stroke="#6b7280" stroke-width="2" fill="none" marker-end="url(#arrow2)"/>
+  <rect x="400" y="74" width="280" height="36" rx="8" fill="#eef4ff" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="540" y="97" text-anchor="middle" font-size="13" font-weight="700" fill="#1d4ed8">Incoming job vs. each canonical job</text>
 
   <g font-size="12.5">
-    <rect x="365" y="90" width="270" height="50" rx="8" fill="#ffffff" stroke="#9ca3af" stroke-width="1.5"/>
-    <text x="500" y="112" text-anchor="middle" fill="#374151" font-weight="600">1. Same (source_name, source_job_id)?</text>
-    <text x="500" y="128" text-anchor="middle" fill="#6b7280" font-size="10.5">Exact re-fetch of a known posting</text>
+    <rect x="330" y="130" width="420" height="44" rx="8" fill="#fff" stroke="#6b7280"/>
+    <text x="540" y="149" text-anchor="middle" font-weight="700" fill="#1f2328">1. Same (source_name, source_job_id)?</text>
+    <text x="540" y="166" text-anchor="middle" font-size="11" fill="#6b7280">exact re-fetch of a known posting</text>
 
-    <rect x="365" y="160" width="270" height="50" rx="8" fill="#ffffff" stroke="#9ca3af" stroke-width="1.5"/>
-    <text x="500" y="182" text-anchor="middle" fill="#374151" font-weight="600">2. Same canonical application URL?</text>
-    <text x="500" y="198" text-anchor="middle" fill="#6b7280" font-size="10.5">Normalised: strip query/fragment, trailing slash</text>
+    <rect x="330" y="190" width="420" height="44" rx="8" fill="#fff" stroke="#6b7280"/>
+    <text x="540" y="209" text-anchor="middle" font-weight="700" fill="#1f2328">2. Same canonical application URL?</text>
+    <text x="540" y="226" text-anchor="middle" font-size="11" fill="#6b7280">normalised: query / fragment / trailing slash stripped</text>
 
-    <rect x="365" y="230" width="270" height="50" rx="8" fill="#ffffff" stroke="#9ca3af" stroke-width="1.5"/>
-    <text x="500" y="252" text-anchor="middle" fill="#374151" font-weight="600">3. Same company + title + location?</text>
-    <text x="500" y="268" text-anchor="middle" fill="#6b7280" font-size="10.5">Normalised strings, exact match</text>
+    <rect x="330" y="250" width="420" height="44" rx="8" fill="#fffbeb" stroke="#d97706"/>
+    <text x="540" y="269" text-anchor="middle" font-weight="700" fill="#92400e">Guard: same source, different ids?</text>
+    <text x="540" y="286" text-anchor="middle" font-size="11" fill="#92400e">two real postings (e.g. two teams, same title) — never merged by heuristics</text>
 
-    <rect x="365" y="300" width="270" height="58" rx="8" fill="#ffffff" stroke="#9ca3af" stroke-width="1.5"/>
-    <text x="500" y="322" text-anchor="middle" fill="#374151" font-weight="600">4. Fuzzy company + title match?</text>
-    <text x="500" y="338" text-anchor="middle" fill="#6b7280" font-size="10.5">SequenceMatcher ratio &#8805; 0.88,</text>
-    <text x="500" y="352" text-anchor="middle" fill="#6b7280" font-size="10.5">same location, seniority words stripped</text>
+    <rect x="330" y="310" width="420" height="44" rx="8" fill="#fff" stroke="#6b7280"/>
+    <text x="540" y="329" text-anchor="middle" font-weight="700" fill="#1f2328">3. Same company + title + location?</text>
+    <text x="540" y="346" text-anchor="middle" font-size="11" fill="#6b7280">normalised strings; seniority markers must also agree</text>
+
+    <rect x="330" y="370" width="420" height="44" rx="8" fill="#fff" stroke="#6b7280"/>
+    <text x="540" y="389" text-anchor="middle" font-weight="700" fill="#1f2328">4. Fuzzy title, same company?</text>
+    <text x="540" y="406" text-anchor="middle" font-size="11" fill="#6b7280">SequenceMatcher ≥ 0.88, shared location, same seniority markers</text>
+  </g>
+  <g stroke="#6b7280" stroke-width="1.6">
+    <line x1="540" y1="110" x2="540" y2="126" marker-end="url(#arrow)"/>
+    <line x1="540" y1="174" x2="540" y2="186" marker-end="url(#arrow)"/>
+    <line x1="540" y1="234" x2="540" y2="246" marker-end="url(#arrow)"/>
+    <line x1="540" y1="294" x2="540" y2="306" marker-end="url(#arrow)"/>
+    <line x1="540" y1="354" x2="540" y2="366" marker-end="url(#arrow)"/>
+    <line x1="540" y1="414" x2="540" y2="438" marker-end="url(#arrow)"/>
   </g>
 
-  <path d="M500,140 L500,160" stroke="#6b7280" stroke-width="2" fill="none" marker-end="url(#arrow2)"/>
-  <path d="M500,210 L500,230" stroke="#6b7280" stroke-width="2" fill="none" marker-end="url(#arrow2)"/>
-  <path d="M500,280 L500,300" stroke="#6b7280" stroke-width="2" fill="none" marker-end="url(#arrow2)"/>
+  <!-- yes branches -->
+  <rect x="820" y="200" width="236" height="120" rx="10" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+  <text x="938" y="228" text-anchor="middle" font-size="14" font-weight="700" fill="#047857">Match → merge</text>
+  <g font-size="11.5" fill="#065f46">
+    <text x="938" y="250" text-anchor="middle">observations combined</text>
+    <text x="938" y="268" text-anchor="middle">(earliest first_seen, latest last_seen)</text>
+    <text x="938" y="286" text-anchor="middle">direct-ATS record preferred</text>
+    <text x="938" y="304" text-anchor="middle">for title / JD / salary</text>
+  </g>
+  <g stroke="#10b981" stroke-width="1.4" fill="none">
+    <path d="M750 152 H790 V260 H816" marker-end="url(#arrow)"/>
+    <path d="M750 212 H790"/>
+    <path d="M750 332 H790 V260"/>
+    <path d="M750 392 H790 V332"/>
+  </g>
+  <text x="770" y="146" font-size="11" fill="#047857">yes</text>
 
-  <rect x="700" y="90" width="240" height="50" rx="8" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
-  <text x="820" y="112" text-anchor="middle" fill="#047857" font-weight="600" font-size="12.5">Match found &#8594; merge</text>
-  <text x="820" y="128" text-anchor="middle" fill="#047857" font-size="10.5">into existing canonical job</text>
+  <!-- guard branch -->
+  <rect x="24" y="250" width="250" height="44" rx="8" fill="#fef2f2" stroke="#dc2626"/>
+  <text x="149" y="269" text-anchor="middle" font-size="12.5" font-weight="700" fill="#b91c1c">Keep separate</text>
+  <text x="149" y="286" text-anchor="middle" font-size="11" fill="#991b1b">skip this candidate</text>
+  <line x1="330" y1="272" x2="278" y2="272" stroke="#dc2626" stroke-width="1.4" marker-end="url(#arrow)"/>
+  <text x="300" y="266" font-size="11" fill="#b91c1c">yes</text>
 
-  <rect x="700" y="330" width="240" height="50" rx="8" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
-  <text x="820" y="352" text-anchor="middle" fill="#b45309" font-weight="600" font-size="12.5">No match &#8594; new</text>
-  <text x="820" y="368" text-anchor="middle" fill="#b45309" font-size="10.5">canonical job created</text>
+  <rect x="400" y="440" width="280" height="36" rx="8" fill="#f3f4f6" stroke="#9ca3af"/>
+  <text x="540" y="463" text-anchor="middle" font-size="12.5" font-weight="700" fill="#374151">No match → new canonical job</text>
 
-  <path d="M635,115 L695,115" stroke="#10b981" stroke-width="2" fill="none" marker-end="url(#arrow2)"/>
-  <path d="M635,185 L680,185 L680,115 L695,115" stroke="#10b981" stroke-width="2" fill="none" marker-end="url(#arrow2)"/>
-  <path d="M635,255 L680,255 L680,115 L695,115" stroke="#10b981" stroke-width="2" fill="none" marker-end="url(#arrow2)"/>
-  <path d="M635,329 L680,329 L680,140 L695,127" stroke="#10b981" stroke-width="2" fill="none" marker-end="url(#arrow2)"/>
-  <path d="M635,345 L695,355" stroke="#f59e0b" stroke-width="2" fill="none" marker-end="url(#arrow2)"/>
-
-  <rect x="60" y="400" width="880" height="44" rx="8" fill="#f9fafb" stroke="#e5e7eb"/>
-  <text x="80" y="420" font-size="12.5" fill="#4b5563">On merge: source observations combine (earliest first_seen, latest last_seen); the more direct source</text>
-  <text x="80" y="436" font-size="12.5" fill="#4b5563">(company/Greenhouse/Lever/Ashby/Workable/SmartRecruiters) is preferred over aggregator-only data for display fields.</text>
+  <text x="540" y="508" text-anchor="middle" font-size="12" fill="#4b5563">Direct sources (company, Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Workday) take precedence over Adzuna / Prospects / manual</text>
+  <text x="540" y="528" text-anchor="middle" font-size="12" fill="#4b5563">observations for display fields. repair-historical-dedup re-applies these rules to stores merged under older rules (with a backup first).</text>
 </svg>

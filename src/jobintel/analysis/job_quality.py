@@ -44,7 +44,23 @@ class EngineeringDomainSignal:
 
 SENIORITY_PATTERNS: tuple[tuple[str, float, tuple[str, ...]], ...] = (
     ("intern", 1.0, ("intern", "internship")),
-    ("graduate", 1.0, ("graduate", "new grad", "early careers", "early career")),
+    (
+        "graduate",
+        1.0,
+        (
+            "graduate",
+            "new grad",
+            "early careers",
+            "early career",
+            "graduate scheme",
+            "graduate programme",
+            "graduate program",
+            "new grad programme",
+            "new grad program",
+            "early careers programme",
+            "early careers program",
+        ),
+    ),
     ("junior", 0.9, ("junior", "entry level", "entry-level")),
     ("associate", 0.65, ("associate",)),
     ("principal", -1.4, ("principal",)),
@@ -59,7 +75,27 @@ SENIORITY_PATTERNS: tuple[tuple[str, float, tuple[str, ...]], ...] = (
 
 JD_SENIORITY_PATTERNS: tuple[tuple[str, float, tuple[str, ...]], ...] = (
     ("intern", 1.0, ("internship",)),
-    ("graduate", 1.0, ("graduate programme", "graduate role", "new grad", "early careers", "early career")),
+    (
+        "graduate",
+        1.0,
+        (
+            "graduate programme",
+            "graduate program",
+            "graduate scheme",
+            "graduate role",
+            "new grad",
+            "new grad programme",
+            "new grad program",
+            "early careers",
+            "early career",
+            "early careers programme",
+            "early careers program",
+            "2027 intake",
+            "2027 graduate",
+            "0-2 years experience",
+            "0-2 years of experience",
+        ),
+    ),
     ("junior", 0.9, ("entry-level role", "entry level role", "junior role")),
     ("associate", 0.65, ("associate-level role", "associate level role")),
     ("principal", -1.4, ("principal-level role", "principal level role")),

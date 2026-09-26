@@ -66,7 +66,7 @@ class HistoricalJobStore:
         observed_at: datetime | None = None,
         run_source: str = "snapshot",
         failures: list[dict[str, Any]] | None = None,
-        graduation_year: int = 2026,
+        candidate_graduation_year: int = 2026,
     ) -> SnapshotResult:
         observed_at = observed_at or datetime.now(timezone.utc)
         run_id = run_id or f"{run_source}_{observed_at.strftime('%Y%m%dT%H%M%S%fZ')}"
@@ -84,7 +84,7 @@ class HistoricalJobStore:
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
         previous = self.read_observations()
         previous_latest = _latest_by_source_key(previous)
-        rows = _current_observation_rows(jobs, observed_at, run_id, previous_latest, graduation_year)
+        rows = _current_observation_rows(jobs, observed_at, run_id, previous_latest, candidate_graduation_year)
         rows.extend(_disappeared_rows(previous_latest, rows, observed_at, run_id))
 
         if rows:
@@ -111,7 +111,7 @@ class HistoricalJobStore:
         with self.runs_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(run_row, ensure_ascii=False, sort_keys=True) + "\n")
 
-        analytics = self.write_analytics(jobs, graduation_year)
+        analytics = self.write_analytics(jobs, candidate_graduation_year)
         quality = self.data_quality_summary()
         return SnapshotResult(run_id, len(rows), analytics, counts, quality)
 
@@ -121,13 +121,13 @@ class HistoricalJobStore:
     def read_runs(self) -> list[dict[str, Any]]:
         return _read_jsonl(self.runs_path)
 
-    def write_analytics(self, jobs: list[Job], graduation_year: int = 2026) -> list[str]:
+    def write_analytics(self, jobs: list[Job], candidate_graduation_year: int = 2026) -> list[str]:
         self.analytics_dir.mkdir(parents=True, exist_ok=True)
         observations = self.read_observations()
         runs = self.read_runs()
         lifecycle = lifecycle_rows(observations)
         source_observations = _latest_source_rows(observations)
-        canonical_jobs = [_canonical_job_row(enrich_job(job, graduation_year)) for job in jobs]
+        canonical_jobs = [_canonical_job_row(enrich_job(job, candidate_graduation_year)) for job in jobs]
         datasets = {
             "job_observations": observations,
             "job_lifecycle": lifecycle,
@@ -234,10 +234,18 @@ class HistoricalJobStore:
         return any(row.get("run_id") == run_id for row in self.read_runs())
 
 
-def snapshot_current_store(store_root: str = "data/local", run_id: str | None = None, graduation_year: int = 2026) -> SnapshotResult:
+def snapshot_current_store(
+    store_root: str = "data/local",
+    run_id: str | None = None,
+    candidate_graduation_year: int = 2026,
+) -> SnapshotResult:
     store = LocalJobStore(store_root)
     history = HistoricalJobStore(store_root)
-    return history.create_snapshot(store.read_jobs(), run_id=run_id, graduation_year=graduation_year)
+    return history.create_snapshot(
+        store.read_jobs(),
+        run_id=run_id,
+        candidate_graduation_year=candidate_graduation_year,
+    )
 
 
 def lifecycle_rows(observations: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -275,11 +283,11 @@ def _current_observation_rows(
     observed_at: datetime,
     run_id: str,
     previous_latest: dict[tuple[str, str], dict[str, Any]],
-    graduation_year: int,
+    candidate_graduation_year: int,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for job in jobs:
-        enriched = enrich_job(job, graduation_year)
+        enriched = enrich_job(job, candidate_graduation_year)
         seniority = extract_seniority(enriched.title, enriched.description)
         role_tracks = ", ".join(score.track.value for score in enriched.role_track_profile.scores)
         sponsorship = enriched.sponsorship.state.value if enriched.sponsorship else "unknown"

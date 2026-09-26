@@ -12,6 +12,7 @@ from jobintel.connectors.base import JobSourceConnector
 from jobintel.connectors.smartrecruiters import SmartRecruitersConnector
 from jobintel.connectors.welcome_to_the_jungle import WelcomeToTheJungleConnector
 from jobintel.connectors.workable import WorkableConnector
+from jobintel.connectors.workday import WorkdayConnector
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,17 @@ class TargetCompany:
     verification_http_status_code: int | None = None
     verification_failure_kind: str | None = None
     verification_message: str | None = None
+    # Manual exclusion (Phase 2.8): a human decided this company/candidate
+    # must never be auto-enabled, regardless of what discovery/verification
+    # finds. This is orthogonal to `verification_status` -- a company can be
+    # manually excluded even if it has a perfectly working candidate (see
+    # Juniper Networks UK / HPE's shared Workday tenant). Every place that
+    # writes `verification_status`/`connector_type`/`connector_token`/
+    # `enabled` from automatic discovery must check `manually_excluded` FIRST
+    # and leave the entry untouched if it's set.
+    manually_excluded: bool = False
+    exclusion_reason: str | None = None
+    excluded_at: str | None = None
     extra_metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -68,6 +80,9 @@ class TargetCompany:
         known.setdefault("enabled", False)
         known.setdefault("notes", "")
         known.setdefault("verification_status", "pending_verification")
+        known.setdefault("manually_excluded", False)
+        known.setdefault("exclusion_reason", None)
+        known.setdefault("excluded_at", None)
         return cls(**known, extra_metadata=extras)
 
 
@@ -77,6 +92,10 @@ def load_company_registry(path: Path | str = "config/target_companies.json") -> 
 
 
 def connectors_from_registry(companies: list[TargetCompany]) -> list[JobSourceConnector]:
+    # Defense in depth: a manually excluded company must never be live-fetched
+    # even if `enabled` were somehow left True -- filtered out here so every
+    # check below it is already excluded-safe, not just discovery/verify.
+    companies = [company for company in companies if not company.manually_excluded]
     greenhouse_tokens = tuple(
         _connector_token(company, "greenhouse")
         for company in companies
@@ -107,6 +126,11 @@ def connectors_from_registry(companies: list[TargetCompany]) -> list[JobSourceCo
         for company in companies
         if company.enabled and _connector_token(company, "welcome_to_the_jungle")
     )
+    workday_tokens = tuple(
+        _connector_token(company, "workday")
+        for company in companies
+        if company.enabled and _connector_token(company, "workday")
+    )
     connectors: list[JobSourceConnector] = []
     if greenhouse_tokens:
         connectors.append(GreenhouseConnector(greenhouse_tokens))
@@ -122,7 +146,27 @@ def connectors_from_registry(companies: list[TargetCompany]) -> list[JobSourceCo
         import os
 
         connectors.append(WelcomeToTheJungleConnector(wttj_organization_references, os.getenv("WTTJ_API_KEY")))
+    if workday_tokens:
+        connectors.append(WorkdayConnector(workday_tokens))
     return connectors
+
+
+CONNECTOR_TYPES = ("greenhouse", "lever", "ashby", "workable", "smartrecruiters", "welcome_to_the_jungle", "workday")
+
+
+def configured_identifier_counts(entries: list[dict]) -> dict[str, int]:
+    """How many enabled, non-excluded registry companies drive each connector
+    family -- the same rule `connectors_from_registry` uses, plus any
+    connector_type a future family introduces. Used to tell "not configured"
+    apart from "configured but never refreshed"."""
+    counts: dict[str, int] = {}
+    for company in (TargetCompany.from_dict(item) for item in entries if isinstance(item, dict)):
+        if not company.enabled or company.manually_excluded:
+            continue
+        for connector_type in set(CONNECTOR_TYPES) | ({company.connector_type} - {None}):
+            if _connector_token(company, connector_type):
+                counts[connector_type] = counts.get(connector_type, 0) + 1
+    return counts
 
 
 def registry_summary(companies: list[TargetCompany]) -> dict[str, int]:
@@ -138,6 +182,7 @@ def registry_summary(companies: list[TargetCompany]) -> dict[str, int]:
         "workable_connections": len([company for company in enabled if _connector_token(company, "workable")]),
         "smartrecruiters_connections": len([company for company in enabled if _connector_token(company, "smartrecruiters")]),
         "welcome_to_the_jungle_connections": len([company for company in enabled if _connector_token(company, "welcome_to_the_jungle")]),
+        "workday_connections": len([company for company in enabled if _connector_token(company, "workday")]),
     }
 
 
@@ -156,4 +201,6 @@ def _connector_token(company: TargetCompany, connector_type: str) -> str | None:
         return company.smartrecruiters_company_identifier
     if connector_type == "welcome_to_the_jungle":
         return company.welcome_to_the_jungle_organization_reference or company.wttj_organization_reference or company.organization_reference
+    if connector_type == "workday":
+        return company.connector_token if company.connector_type == "workday" else None
     return None

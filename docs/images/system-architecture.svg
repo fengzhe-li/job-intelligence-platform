@@ -1,98 +1,123 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 560" font-family="Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 700" font-family="Helvetica, Arial, sans-serif">
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="#6b7280"/>
     </marker>
   </defs>
-  <rect width="1080" height="560" fill="#ffffff"/>
-  <text x="540" y="34" text-anchor="middle" font-size="20" font-weight="700" fill="#1f2328">System Architecture</text>
-  <text x="540" y="56" text-anchor="middle" font-size="13" fill="#6b7280">Multi-source job aggregation, deduplication, explainable ranking, and dual-interface serving</text>
+  <rect width="1200" height="700" fill="#ffffff"/>
+  <text x="600" y="34" text-anchor="middle" font-size="21" font-weight="700" fill="#1f2328">System Architecture</text>
+  <text x="600" y="56" text-anchor="middle" font-size="13" fill="#6b7280">Local-first: every stage reads and writes plain JSON / JSONL under a git-ignored data/local store</text>
 
-  <!-- Connectors column -->
-  <rect x="30" y="90" width="230" height="330" rx="10" fill="#eef4ff" stroke="#3b82f6" stroke-width="1.5"/>
-  <text x="145" y="116" text-anchor="middle" font-size="14.5" font-weight="700" fill="#1d4ed8">Source Connectors</text>
+  <!-- Sources -->
+  <rect x="24" y="80" width="250" height="500" rx="10" fill="#eef4ff" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="149" y="106" text-anchor="middle" font-size="14.5" font-weight="700" fill="#1d4ed8">Job sources (12)</text>
+  <text x="149" y="126" text-anchor="middle" font-size="11" fill="#1d4ed8">Direct ATS · registry-scoped</text>
   <g font-size="12" fill="#1d4ed8">
-    <rect x="48" y="130" width="194" height="26" rx="5" fill="#ffffff" stroke="#3b82f6"/><text x="145" y="147" text-anchor="middle">Greenhouse</text>
-    <rect x="48" y="162" width="194" height="26" rx="5" fill="#ffffff" stroke="#3b82f6"/><text x="145" y="179" text-anchor="middle">Lever</text>
-    <rect x="48" y="194" width="194" height="26" rx="5" fill="#ffffff" stroke="#3b82f6"/><text x="145" y="211" text-anchor="middle">Ashby</text>
-    <rect x="48" y="226" width="194" height="26" rx="5" fill="#ffffff" stroke="#3b82f6"/><text x="145" y="243" text-anchor="middle">Workable</text>
-    <rect x="48" y="258" width="194" height="26" rx="5" fill="#ffffff" stroke="#3b82f6"/><text x="145" y="275" text-anchor="middle">SmartRecruiters</text>
-    <rect x="48" y="290" width="194" height="26" rx="5" fill="#ffffff" stroke="#3b82f6"/><text x="145" y="307" text-anchor="middle">Adzuna (official API)</text>
-    <rect x="48" y="322" width="194" height="26" rx="5" fill="#ffffff" stroke="#3b82f6"/><text x="145" y="339" text-anchor="middle">Welcome to the Jungle</text>
+    <rect x="40" y="134" width="106" height="24" rx="5" fill="#fff" stroke="#3b82f6"/><text x="93" y="150" text-anchor="middle">Greenhouse</text>
+    <rect x="152" y="134" width="106" height="24" rx="5" fill="#fff" stroke="#3b82f6"/><text x="205" y="150" text-anchor="middle">Lever</text>
+    <rect x="40" y="164" width="106" height="24" rx="5" fill="#fff" stroke="#3b82f6"/><text x="93" y="180" text-anchor="middle">Ashby</text>
+    <rect x="152" y="164" width="106" height="24" rx="5" fill="#fff" stroke="#3b82f6"/><text x="205" y="180" text-anchor="middle">Workable</text>
+    <rect x="40" y="194" width="106" height="24" rx="5" fill="#fff" stroke="#3b82f6"/><text x="93" y="210" text-anchor="middle">SmartRecruiters</text>
+    <rect x="152" y="194" width="106" height="24" rx="5" fill="#fff" stroke="#3b82f6"/><text x="205" y="210" text-anchor="middle">Workday</text>
+    <rect x="40" y="224" width="218" height="24" rx="5" fill="#fff" stroke="#3b82f6" stroke-dasharray="4 3"/><text x="149" y="240" text-anchor="middle">Welcome to the Jungle (key-gated)</text>
   </g>
-  <text x="145" y="368" text-anchor="middle" font-size="11" fill="#1d4ed8">Common interface: JobSourceConnector</text>
-  <text x="145" y="384" text-anchor="middle" font-size="11" fill="#1d4ed8">fetch_jobs / health_check / normalise</text>
-  <rect x="48" y="396" width="194" height="14" fill="none"/>
-
-  <text x="145" y="440" text-anchor="middle" font-size="11.5" fill="#6b7280">Company registry</text>
-  <text x="145" y="456" text-anchor="middle" font-size="11.5" fill="#6b7280">(config/target_companies.json)</text>
-  <text x="145" y="472" text-anchor="middle" font-size="11.5" fill="#6b7280">drives which connectors run,</text>
-  <text x="145" y="488" text-anchor="middle" font-size="11.5" fill="#6b7280">with automated ATS discovery</text>
-  <text x="145" y="504" text-anchor="middle" font-size="11.5" fill="#6b7280">and HTTP verification</text>
-
-  <!-- Pipeline column -->
-  <rect x="300" y="90" width="230" height="330" rx="10" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
-  <text x="415" y="116" text-anchor="middle" font-size="14.5" font-weight="700" fill="#047857">Pipeline</text>
-  <g font-size="12" fill="#047857">
-    <rect x="318" y="132" width="194" height="40" rx="6" fill="#ffffff" stroke="#10b981"/>
-    <text x="415" y="148" text-anchor="middle">Normalise to canonical</text>
-    <text x="415" y="163" text-anchor="middle">Job model</text>
-
-    <rect x="318" y="182" width="194" height="52" rx="6" fill="#ffffff" stroke="#10b981"/>
-    <text x="415" y="200" text-anchor="middle">Layered deduplication</text>
-    <text x="415" y="216" text-anchor="middle" font-size="10.5">ID / URL / company+title+</text>
-    <text x="415" y="230" text-anchor="middle" font-size="10.5">location / fuzzy title match</text>
-
-    <rect x="318" y="244" width="194" height="52" rx="6" fill="#ffffff" stroke="#10b981"/>
-    <text x="415" y="262" text-anchor="middle">Deterministic enrichment</text>
-    <text x="415" y="278" text-anchor="middle" font-size="10.5">sponsorship, grad-year,</text>
-    <text x="415" y="292" text-anchor="middle" font-size="10.5">role-track, seniority</text>
-
-    <rect x="318" y="306" width="194" height="52" rx="6" fill="#ffffff" stroke="#10b981"/>
-    <text x="415" y="324" text-anchor="middle">Explainable matching</text>
-    <text x="415" y="340" text-anchor="middle" font-size="10.5">component-scored against</text>
-    <text x="415" y="354" text-anchor="middle" font-size="10.5">candidate evidence</text>
+  <text x="149" y="274" text-anchor="middle" font-size="11" fill="#1d4ed8">Discovery · partial coverage</text>
+  <g font-size="12" fill="#1d4ed8">
+    <rect x="40" y="282" width="106" height="24" rx="5" fill="#fff" stroke="#3b82f6"/><text x="93" y="298" text-anchor="middle">Adzuna (key)</text>
+    <rect x="152" y="282" width="106" height="24" rx="5" fill="#fff" stroke="#3b82f6"/><text x="205" y="298" text-anchor="middle">Prospects</text>
   </g>
-
-  <!-- Storage column -->
-  <rect x="570" y="90" width="220" height="200" rx="10" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
-  <text x="680" y="116" text-anchor="middle" font-size="14.5" font-weight="700" fill="#b45309">Storage</text>
-  <g font-size="11.5" fill="#b45309">
-    <rect x="588" y="130" width="184" height="46" rx="6" fill="#ffffff" stroke="#f59e0b"/>
-    <text x="680" y="148" text-anchor="middle">Raw JSONL snapshots</text>
-    <text x="680" y="164" text-anchor="middle" font-size="10">data/local/raw_snapshots/</text>
-
-    <rect x="588" y="184" width="184" height="46" rx="6" fill="#ffffff" stroke="#f59e0b"/>
-    <text x="680" y="202" text-anchor="middle">Canonical jobs JSON</text>
-    <text x="680" y="218" text-anchor="middle" font-size="10">data/local/processed/</text>
-
-    <rect x="588" y="238" width="184" height="40" rx="6" fill="#ffffff" stroke="#f59e0b" stroke-dasharray="5,3"/>
-    <text x="680" y="256" text-anchor="middle">PostgreSQL-ready schema</text>
-    <text x="680" y="270" text-anchor="middle" font-size="10">data_contracts/ (not wired up)</text>
+  <text x="149" y="332" text-anchor="middle" font-size="11" fill="#b45309">Manual fallback only</text>
+  <g font-size="12" fill="#92400e">
+    <rect x="40" y="340" width="218" height="24" rx="5" fill="#fffbeb" stroke="#d97706"/><text x="149" y="356" text-anchor="middle">Trackr · Gradcracker · Bright Network</text>
+    <rect x="40" y="370" width="218" height="24" rx="5" fill="#fffbeb" stroke="#d97706"/><text x="149" y="386" text-anchor="middle">manual-job-import &lt;url&gt; (any source)</text>
   </g>
+  <line x1="40" y1="410" x2="258" y2="410" stroke="#bfdbfe"/>
+  <text x="149" y="432" text-anchor="middle" font-size="11.5" font-weight="700" fill="#1d4ed8">Company registry</text>
+  <text x="149" y="449" text-anchor="middle" font-size="11" fill="#1d4ed8">config/target_companies.json</text>
+  <text x="149" y="466" text-anchor="middle" font-size="11" fill="#1d4ed8">ATS discover / verify / exclude</text>
+  <text x="149" y="490" text-anchor="middle" font-size="11.5" font-weight="700" fill="#1d4ed8">Company discovery</text>
+  <text x="149" y="507" text-anchor="middle" font-size="11" fill="#1d4ed8">unseen employers from ingested</text>
+  <text x="149" y="524" text-anchor="middle" font-size="11" fill="#1d4ed8">jobs → reviewed → promoted</text>
+  <text x="149" y="556" text-anchor="middle" font-size="10.5" fill="#6b7280">SourceSnapshot: payloads + complete scopes</text>
 
-  <!-- Serving column -->
-  <rect x="830" y="90" width="220" height="200" rx="10" fill="#f3f4f6" stroke="#9ca3af" stroke-width="1.5"/>
-  <text x="940" y="116" text-anchor="middle" font-size="14.5" font-weight="700" fill="#374151">Serving</text>
-  <g font-size="11.5" fill="#374151">
-    <rect x="848" y="130" width="184" height="52" rx="6" fill="#ffffff" stroke="#9ca3af"/>
-    <text x="940" y="148" text-anchor="middle">CLI (20 subcommands)</text>
-    <text x="940" y="164" text-anchor="middle" font-size="10">ingest, rank, profile, ATS ops</text>
-
-    <rect x="848" y="192" width="184" height="52" rx="6" fill="#ffffff" stroke="#9ca3af"/>
-    <text x="940" y="210" text-anchor="middle">Bilingual EN/ZH dashboard</text>
-    <text x="940" y="226" text-anchor="middle" font-size="10">stdlib http.server, no framework</text>
+  <!-- Pipeline -->
+  <rect x="316" y="80" width="270" height="500" rx="10" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+  <text x="451" y="106" text-anchor="middle" font-size="14.5" font-weight="700" fill="#047857">Job pipeline</text>
+  <g font-size="12" fill="#065f46">
+    <rect x="334" y="122" width="234" height="44" rx="6" fill="#fff" stroke="#10b981"/>
+    <text x="451" y="140" text-anchor="middle" font-weight="700">Normalise</text><text x="451" y="157" text-anchor="middle" font-size="11">canonical Job + SourceObservation</text>
+    <rect x="334" y="178" width="234" height="44" rx="6" fill="#fff" stroke="#10b981"/>
+    <text x="451" y="196" text-anchor="middle" font-weight="700">Enrich (deterministic)</text><text x="451" y="213" text-anchor="middle" font-size="11">role track · seniority · sponsorship · grad year</text>
+    <rect x="334" y="234" width="234" height="44" rx="6" fill="#fff" stroke="#10b981"/>
+    <text x="451" y="252" text-anchor="middle" font-weight="700">Cross-source dedup</text><text x="451" y="269" text-anchor="middle" font-size="11">direct-ATS precedence for display fields</text>
+    <rect x="334" y="290" width="234" height="44" rx="6" fill="#fff" stroke="#10b981"/>
+    <text x="451" y="308" text-anchor="middle" font-weight="700">History + closure</text><text x="451" y="325" text-anchor="middle" font-size="11">absence closes only in complete scopes</text>
+    <rect x="334" y="346" width="234" height="44" rx="6" fill="#fff" stroke="#10b981"/>
+    <text x="451" y="364" text-anchor="middle" font-weight="700">Explainable matching</text><text x="451" y="381" text-anchor="middle" font-size="11">12 scored components + cited evidence</text>
+    <rect x="334" y="402" width="234" height="44" rx="6" fill="#fff" stroke="#10b981"/>
+    <text x="451" y="420" text-anchor="middle" font-weight="700">Source &amp; company health</text><text x="451" y="437" text-anchor="middle" font-size="11">failed ≠ empty ≠ not configured</text>
   </g>
+  <text x="451" y="480" text-anchor="middle" font-size="11.5" font-weight="700" fill="#047857">daily-refresh</text>
+  <text x="451" y="497" text-anchor="middle" font-size="11" fill="#047857">one command: refresh all automated</text>
+  <text x="451" y="514" text-anchor="middle" font-size="11" fill="#047857">sources, scan for new companies,</text>
+  <text x="451" y="531" text-anchor="middle" font-size="11" fill="#047857">optional GitHub sync, action summary</text>
 
-  <!-- Arrows -->
-  <path d="M260,255 L295,255" stroke="#6b7280" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
-  <path d="M530,255 L565,255" stroke="#6b7280" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
-  <path d="M790,190 L825,190" stroke="#6b7280" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <!-- Candidate side -->
+  <rect x="628" y="80" width="270" height="500" rx="10" fill="#f5f3ff" stroke="#8b5cf6" stroke-width="1.5"/>
+  <text x="763" y="106" text-anchor="middle" font-size="14.5" font-weight="700" fill="#6d28d9">Candidate &amp; CV side</text>
+  <g font-size="12" fill="#5b21b6">
+    <rect x="646" y="122" width="234" height="44" rx="6" fill="#fff" stroke="#8b5cf6"/>
+    <text x="763" y="140" text-anchor="middle" font-weight="700">Evidence Bank</text><text x="763" y="157" text-anchor="middle" font-size="11">capabilities, each with a cited quote</text>
+    <rect x="646" y="178" width="234" height="44" rx="6" fill="#fff" stroke="#8b5cf6"/>
+    <text x="763" y="196" text-anchor="middle" font-weight="700">GitHub sync + enrichment</text><text x="763" y="213" text-anchor="middle" font-size="11">staged → validated → promoted</text>
+    <rect x="646" y="234" width="234" height="44" rx="6" fill="#fff" stroke="#8b5cf6"/>
+    <text x="763" y="252" text-anchor="middle" font-weight="700">JD requirement extraction</text><text x="763" y="269" text-anchor="middle" font-size="11">required / preferred skills</text>
+    <rect x="646" y="290" width="234" height="44" rx="6" fill="#fff" stroke="#8b5cf6"/>
+    <text x="763" y="308" text-anchor="middle" font-weight="700">Grounded project selection</text><text x="763" y="325" text-anchor="middle" font-size="11">per-JD ranking, versioned policy</text>
+    <rect x="646" y="346" width="234" height="44" rx="6" fill="#fff" stroke="#8b5cf6"/>
+    <text x="763" y="364" text-anchor="middle" font-weight="700">CV generation + render</text><text x="763" y="381" text-anchor="middle" font-size="11">claim grounding · real one-page PDF</text>
+    <rect x="646" y="402" width="234" height="44" rx="6" fill="#fff" stroke="#8b5cf6"/>
+    <text x="763" y="420" text-anchor="middle" font-weight="700">Review gate</text><text x="763" y="437" text-anchor="middle" font-size="11">AUTO_PREPARE / REVIEW / BLOCK</text>
+    <rect x="646" y="458" width="234" height="44" rx="6" fill="#fff" stroke="#8b5cf6"/>
+    <text x="763" y="476" text-anchor="middle" font-weight="700">Application lifecycle</text><text x="763" y="493" text-anchor="middle" font-size="11">append-only history · CV frozen at submit</text>
+  </g>
+  <rect x="646" y="518" width="234" height="44" rx="6" fill="#fff" stroke="#8b5cf6" stroke-dasharray="4 3"/>
+  <text x="763" y="536" text-anchor="middle" font-size="12" font-weight="700" fill="#5b21b6">Gemini advisory layer (optional)</text>
+  <text x="763" y="553" text-anchor="middle" font-size="11" fill="#5b21b6">span-validated, never authoritative</text>
 
-  <rect x="30" y="450" width="1020" height="86" rx="10" fill="#f9fafb" stroke="#e5e7eb"/>
-  <text x="50" y="474" font-size="13" font-weight="700" fill="#1f2328">Zero third-party runtime dependencies</text>
-  <text x="50" y="494" font-size="12" fill="#4b5563">Connectors, dedup, matching, and the dashboard are built entirely on the Python standard library</text>
-  <text x="50" y="512" font-size="12" fill="#4b5563">(urllib, http.server, csv, json, xml.etree, difflib). pytest is a dev-only dependency for the test suite.</text>
+  <!-- Serving -->
+  <rect x="940" y="80" width="236" height="500" rx="10" fill="#fff7ed" stroke="#f97316" stroke-width="1.5"/>
+  <text x="1058" y="106" text-anchor="middle" font-size="14.5" font-weight="700" fill="#c2410c">Interfaces</text>
+  <g font-size="12" fill="#9a3412">
+    <rect x="958" y="122" width="200" height="200" rx="6" fill="#fff" stroke="#f97316"/>
+    <text x="1058" y="142" text-anchor="middle" font-weight="700">Dashboard (stdlib http.server)</text>
+    <text x="974" y="166">Today · Inbox · Priority</text>
+    <text x="974" y="186">Job detail (explainability)</text>
+    <text x="974" y="206">Deadlines · Watchlist</text>
+    <text x="974" y="226">CV workbench · PDF view</text>
+    <text x="974" y="246">Applications · detail</text>
+    <text x="974" y="266">Source &amp; company health</text>
+    <text x="974" y="286">Manual job import</text>
+    <text x="974" y="306" font-size="11" fill="#c2410c">local, single-user, no auth</text>
+    <rect x="958" y="336" width="200" height="84" rx="6" fill="#fff" stroke="#f97316"/>
+    <text x="1058" y="356" text-anchor="middle" font-weight="700">CLI (40 subcommands)</text>
+    <text x="974" y="378">ingest · daily-refresh · ats-*</text>
+    <text x="974" y="396">profile-* · github-sync · cv-*</text>
+    <text x="974" y="414">application-* · coverage-today</text>
+  </g>
+  <text x="1058" y="452" text-anchor="middle" font-size="11.5" font-weight="700" fill="#c2410c">Human in the loop</text>
+  <text x="1058" y="470" text-anchor="middle" font-size="11" fill="#9a3412">reviews every CV and submits</text>
+  <text x="1058" y="487" text-anchor="middle" font-size="11" fill="#9a3412">applications manually —</text>
+  <text x="1058" y="504" text-anchor="middle" font-size="11" fill="#9a3412">no auto-apply, no email parsing</text>
 
-  <text x="540" y="552" text-anchor="middle" font-size="11" fill="#9ca3af">143 tests pass locally; not deployed to any live service.</text>
+  <!-- arrows -->
+  <line x1="276" y1="330" x2="312" y2="330" stroke="#6b7280" stroke-width="1.8" marker-end="url(#arrow)"/>
+  <line x1="588" y1="330" x2="624" y2="330" stroke="#6b7280" stroke-width="1.8" marker-end="url(#arrow)"/>
+  <line x1="900" y1="330" x2="936" y2="330" stroke="#6b7280" stroke-width="1.8" marker-end="url(#arrow)"/>
+
+  <!-- storage -->
+  <rect x="24" y="604" width="1152" height="76" rx="10" fill="#f3f4f6" stroke="#9ca3af" stroke-width="1.5"/>
+  <text x="600" y="628" text-anchor="middle" font-size="14" font-weight="700" fill="#374151">Local store — data/local/ (git-ignored personal runtime state)</text>
+  <text x="600" y="650" text-anchor="middle" font-size="12" fill="#4b5563">raw_snapshots/*.jsonl · processed/canonical_jobs.json + source_health.json · profile/ · applications/ (append-only history) · cv_artifacts/ (immutable JSONL + PDFs)</text>
+  <text x="600" y="669" text-anchor="middle" font-size="11.5" fill="#6b7280">data_contracts/schemas/postgres.sql is a schema contract only — no code path connects to PostgreSQL</text>
 </svg>

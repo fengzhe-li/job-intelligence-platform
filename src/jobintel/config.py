@@ -23,7 +23,12 @@ class RankingConfig:
     london_preference_weight: float
     excluded_occupations: tuple[str, ...]
     target_markets: tuple[str, ...]
-    graduation_year: int = 2026
+    # The candidate's actual degree completion year. Never a fixed "target intake
+    # year" -- a job's own intake/start year is independent per-job metadata (see
+    # analysis.evidence.detect_graduation_year) and is not filtered against a single
+    # config value. Graduate opportunities from any intake year are relevant if the
+    # candidate is otherwise eligible.
+    candidate_graduation_year: int = 2026
 
 
 def default_ranking_config() -> RankingConfig:
@@ -48,6 +53,7 @@ def default_ranking_config() -> RankingConfig:
             RoleTrack.IOT: 0.75,
             RoleTrack.EMBEDDED_SOFTWARE: 0.75,
             RoleTrack.EDGE_CONNECTED_SYSTEMS: 0.75,
+            RoleTrack.MOTORSPORT_ENGINEERING: 0.75,
         },
         source_weights={
             "company": 1.0,
@@ -57,6 +63,10 @@ def default_ranking_config() -> RankingConfig:
             "welcome_to_the_jungle": 0.85,
             "linkedin": 0.6,
             "indeed": 0.55,
+            "trackr": 0.7,
+            "gradcracker": 0.7,
+            "bright_network": 0.7,
+            "prospects": 0.7,
         },
         freshness_half_life_days=14.0,
         sponsorship_weights={
@@ -111,5 +121,5 @@ def load_ranking_config(path: Path | str = "config/personal_strategy.json") -> R
         london_preference_weight=payload.get("london_preference_weight", config.london_preference_weight),
         excluded_occupations=config.excluded_occupations,
         target_markets=(payload.get("primary_market", "United Kingdom"),),
-        graduation_year=payload.get("graduation_year", config.graduation_year),
+        candidate_graduation_year=payload.get("candidate_graduation_year", config.candidate_graduation_year),
     )

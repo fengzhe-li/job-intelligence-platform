@@ -1,7 +1,7 @@
 {
   "discovery_principle": "Broad discovery, personalised ranking",
   "freshness_half_life_days": 14.0,
-  "graduation_year": 2026,
+  "candidate_graduation_year": 2026,
   "graduation_year_weights": {
     "graduate_friendly": 0.8,
     "no_year_stated": 0.8,

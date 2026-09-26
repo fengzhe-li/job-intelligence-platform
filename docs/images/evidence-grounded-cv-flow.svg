@@ -1,0 +1,120 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 620" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#6b7280"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="620" fill="#ffffff"/>
+  <text x="600" y="34" text-anchor="middle" font-size="21" font-weight="700" fill="#1f2328">Evidence Bank → Grounded CV → Application</text>
+  <text x="600" y="56" text-anchor="middle" font-size="13" fill="#6b7280">Tailoring may select, reorder and narrow evidence — it may never strengthen it</text>
+
+  <!-- Inputs -->
+  <rect x="24" y="80" width="250" height="300" rx="10" fill="#f5f3ff" stroke="#8b5cf6" stroke-width="1.5"/>
+  <text x="149" y="106" text-anchor="middle" font-size="14.5" font-weight="700" fill="#6d28d9">Evidence sources</text>
+  <g font-size="12" fill="#5b21b6">
+    <rect x="40" y="120" width="218" height="26" rx="5" fill="#fff" stroke="#8b5cf6"/><text x="149" y="138" text-anchor="middle">Authored CV text (profile-import)</text>
+    <rect x="40" y="152" width="218" height="26" rx="5" fill="#fff" stroke="#8b5cf6"/><text x="149" y="170" text-anchor="middle">Project descriptions / READMEs</text>
+    <rect x="40" y="184" width="218" height="26" rx="5" fill="#fff" stroke="#8b5cf6"/><text x="149" y="202" text-anchor="middle">github-sync (README + languages)</text>
+    <rect x="40" y="216" width="218" height="26" rx="5" fill="#fff" stroke="#8b5cf6"/><text x="149" y="234" text-anchor="middle">Education description</text>
+  </g>
+  <text x="149" y="272" text-anchor="middle" font-size="11.5" font-weight="700" fill="#6d28d9">Evidence enrichment (local)</text>
+  <text x="149" y="290" text-anchor="middle" font-size="11" fill="#5b21b6">curated atomic evidence items</text>
+  <text x="149" y="306" text-anchor="middle" font-size="11" fill="#5b21b6">staged → diffed → validated → promoted</text>
+  <text x="149" y="322" text-anchor="middle" font-size="11" fill="#5b21b6">forbidden extrapolations rejected</text>
+  <text x="149" y="354" text-anchor="middle" font-size="11" fill="#6b7280">profile-rebuild never lets raw files</text>
+  <text x="149" y="370" text-anchor="middle" font-size="11" fill="#6b7280">overwrite curated evidence</text>
+
+  <!-- Evidence bank -->
+  <rect x="306" y="80" width="250" height="300" rx="10" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+  <text x="431" y="106" text-anchor="middle" font-size="14.5" font-weight="700" fill="#047857">Evidence Bank</text>
+  <text x="431" y="126" text-anchor="middle" font-size="11" fill="#065f46">CandidateProfile (data/local/profile)</text>
+  <rect x="322" y="140" width="218" height="112" rx="6" fill="#fff" stroke="#10b981"/>
+  <g font-size="12" fill="#065f46">
+    <text x="336" y="162" font-weight="700">Capability "PostgreSQL"</text>
+    <text x="336" y="182">quote: exact source sentence</text>
+    <text x="336" y="200">source: README / CV / project</text>
+    <text x="336" y="218">project_id · confidence</text>
+    <text x="336" y="236">tier: strong / partial / missing</text>
+  </g>
+  <g font-size="11.5" fill="#065f46">
+    <text x="336" y="276">• every capability cites its quote</text>
+    <text x="336" y="296">• evidence is bound to one project</text>
+    <text x="336" y="316">• contact fields never fabricated</text>
+    <text x="336" y="336">• project rank is never global —</text>
+    <text x="336" y="354">  recomputed for each JD</text>
+  </g>
+
+  <!-- JD -->
+  <rect x="588" y="80" width="250" height="140" rx="10" fill="#eef4ff" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="713" y="106" text-anchor="middle" font-size="14.5" font-weight="700" fill="#1d4ed8">Target job</text>
+  <g font-size="12" fill="#1e3a8a">
+    <text x="604" y="132">extract_jd_requirements()</text>
+    <text x="604" y="152">required vs preferred skills,</text>
+    <text x="604" y="172">years of experience, role track</text>
+    <text x="604" y="200" fill="#6b7280" font-size="11">bounded by a curated skill list</text>
+  </g>
+
+  <!-- Selection -->
+  <rect x="588" y="240" width="250" height="140" rx="10" fill="#eef4ff" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="713" y="266" text-anchor="middle" font-size="14.5" font-weight="700" fill="#1d4ed8">Project selection</text>
+  <g font-size="12" fill="#1e3a8a">
+    <text x="604" y="292">skill-evidence match +</text>
+    <text x="604" y="312">role-track relevance</text>
+    <text x="604" y="332">versioned tailoring policy (YAML)</text>
+    <text x="604" y="352">usually 3–4 projects, no fixed quota</text>
+  </g>
+
+  <!-- Generation -->
+  <rect x="870" y="80" width="306" height="300" rx="10" fill="#fff7ed" stroke="#f97316" stroke-width="1.5"/>
+  <text x="1023" y="106" text-anchor="middle" font-size="14.5" font-weight="700" fill="#c2410c">CV generation</text>
+  <g font-size="12" fill="#9a3412">
+    <text x="886" y="132" font-weight="700">1. Compose bullets</text>
+    <text x="898" y="150">from that project's own quotes only</text>
+    <text x="886" y="176" font-weight="700">2. Claim grounding</text>
+    <text x="898" y="194">tech / metric / scale / outcome must</text>
+    <text x="898" y="212">appear in the project's evidence</text>
+    <text x="886" y="238" font-weight="700">3. Render real PDF (reportlab)</text>
+    <text x="898" y="256">measure true page count, trim weakest</text>
+    <text x="898" y="274">bullet → project → wording; one modest</text>
+    <text x="898" y="292">layout step; never tiny fonts</text>
+    <text x="886" y="318" font-weight="700">4. Review gate</text>
+    <text x="898" y="336">missing required skills, eligibility,</text>
+    <text x="898" y="354">contact gaps, page count, sections</text>
+  </g>
+
+  <line x1="276" y1="230" x2="302" y2="230" stroke="#6b7280" stroke-width="1.8" marker-end="url(#arrow)"/>
+  <line x1="558" y1="310" x2="584" y2="310" stroke="#6b7280" stroke-width="1.8" marker-end="url(#arrow)"/>
+  <line x1="713" y1="222" x2="713" y2="236" stroke="#6b7280" stroke-width="1.8" marker-end="url(#arrow)"/>
+  <line x1="840" y1="230" x2="866" y2="230" stroke="#6b7280" stroke-width="1.8" marker-end="url(#arrow)"/>
+
+  <!-- Gate outcomes -->
+  <g font-size="12.5">
+    <rect x="24" y="410" width="370" height="56" rx="8" fill="#ecfdf5" stroke="#10b981"/>
+    <text x="209" y="433" text-anchor="middle" font-weight="700" fill="#047857">AUTO_PREPARE</text>
+    <text x="209" y="453" text-anchor="middle" font-size="11.5" fill="#065f46">automated checks passed — still read by a human</text>
+    <rect x="415" y="410" width="370" height="56" rx="8" fill="#fffbeb" stroke="#d97706"/>
+    <text x="600" y="433" text-anchor="middle" font-weight="700" fill="#b45309">REVIEW_REQUIRED</text>
+    <text x="600" y="453" text-anchor="middle" font-size="11.5" fill="#92400e">gaps, partial evidence, 2 pages, missing contact</text>
+    <rect x="806" y="410" width="370" height="56" rx="8" fill="#fef2f2" stroke="#dc2626"/>
+    <text x="991" y="433" text-anchor="middle" font-weight="700" fill="#b91c1c">BLOCK_AUTO_SUBMISSION</text>
+    <text x="991" y="453" text-anchor="middle" font-size="11.5" fill="#991b1b">most must-haves missing, ineligible grad year, 3+ pages</text>
+  </g>
+  <line x1="1023" y1="382" x2="1023" y2="406" stroke="#6b7280" stroke-width="1.8" marker-end="url(#arrow)"/>
+
+  <!-- Persistence -->
+  <rect x="24" y="494" width="560" height="104" rx="10" fill="#f3f4f6" stroke="#9ca3af" stroke-width="1.5"/>
+  <text x="40" y="518" font-size="14" font-weight="700" fill="#374151">Immutable CV artifact (cv_artifacts/*.jsonl + PDF)</text>
+  <g font-size="12" fill="#4b5563">
+    <text x="40" y="542">JD snapshot · selected project ids · evidence ids used ·</text>
+    <text x="40" y="560">PDF path + real page count · full text · review decision.</text>
+    <text x="40" y="578">Regenerating creates a new version; nothing is overwritten.</text>
+  </g>
+  <rect x="616" y="494" width="560" height="104" rx="10" fill="#f3f4f6" stroke="#9ca3af" stroke-width="1.5"/>
+  <text x="632" y="518" font-size="14" font-weight="700" fill="#374151">Application (human-confirmed submit)</text>
+  <g font-size="12" fill="#4b5563">
+    <text x="632" y="542">The user confirms they reviewed the exact version, then marks it</text>
+    <text x="632" y="560">submitted. The CV is frozen: a different version is refused later.</text>
+    <text x="632" y="578">Status history is append-only. The system never submits for you.</text>
+  </g>
+  <line x1="586" y1="546" x2="612" y2="546" stroke="#6b7280" stroke-width="1.8" marker-end="url(#arrow)"/>
+</svg>

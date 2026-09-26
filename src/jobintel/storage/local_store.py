@@ -4,7 +4,7 @@ import json
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from jobintel.connectors.base import RawJobPayload
 from jobintel.dedup.v1 import deduplicate_jobs
@@ -21,6 +21,8 @@ class LocalJobStore:
         self.source_health_path = self.processed_dir / "source_health.json"
         self.refresh_summary_path = self.processed_dir / "refresh_summary.json"
         self.saved_searches_path = self.processed_dir / "saved_searches.json"
+        self.daily_report_path = self.processed_dir / "daily_refresh_latest.json"
+        self.daily_report_history_path = self.processed_dir / "daily_refresh_history.jsonl"
 
     def write_raw_payloads(self, payloads: list[RawJobPayload]) -> Path:
         self.raw_dir.mkdir(parents=True, exist_ok=True)
@@ -30,12 +32,73 @@ class LocalJobStore:
                 handle.write(json.dumps(_jsonable(asdict(payload)), ensure_ascii=False, sort_keys=True) + "\n")
         return path
 
-    def write_jobs(self, jobs: list[Job], mark_missing_inactive: bool = True, refreshed_sources: set[str] | None = None) -> Path:
+    def write_jobs(self, jobs: list[Job]) -> Path:
+        """Merge `jobs` into the store. NEVER infers closure: a job missing
+        from `jobs` is left exactly as it was. Closure is only ever applied by
+        `write_snapshot`, with explicit completeness evidence."""
+        existing = self.read_jobs()
+        # (Unchanged pre-Phase-3 behaviour: a first write into an empty store
+        # persists `jobs` as given; later writes dedup against the store.)
+        return self._persist(deduplicate_jobs(existing + jobs) if existing else jobs)
+
+    def write_snapshot(
+        self,
+        jobs: list[Job],
+        source_name: str,
+        complete_scopes: frozenset[str] | set[str],
+        scope_of: Callable[[dict[str, Any]], str | None],
+    ) -> list[tuple[str, str]]:
+        """Merge one source's refresh and close ONLY what it proves closed.
+
+        An existing, still-active observation from `source_name` is marked
+        DISAPPEARED only if it is absent from `jobs` AND `scope_of(its
+        raw_payload)` is one of `complete_scopes` -- i.e. this refresh fetched
+        that scope's entire current listing. Observations of any other source,
+        with an unknown scope, or in a scope not proven complete this cycle are
+        untouched. Returns the (source_name, source_job_id) keys that
+        transitioned active -> DISAPPEARED in THIS write (the per-refresh
+        delta, not a cumulative count)."""
+        incoming_keys = {
+            (observation.source_name, observation.source_job_id)
+            for job in jobs
+            for observation in job.source_observations
+        }
+        closed: list[tuple[str, str]] = []
+        existing = self.read_jobs()
+        if not existing:
+            self._persist(jobs)
+            return []
+        prior: list[Job] = []
+        for job in existing:
+            observations = []
+            for observation in job.source_observations:
+                key = (observation.source_name, observation.source_job_id)
+                if (
+                    complete_scopes
+                    and observation.active
+                    and observation.source_name == source_name
+                    and key not in incoming_keys
+                    and scope_of(observation.raw_payload) in complete_scopes
+                ):
+                    observation = replace(observation, active=False, latest_observed_state="DISAPPEARED")
+                    closed.append(key)
+                observations.append(observation)
+            prior.append(replace(job, source_observations=observations))
+        self._persist(deduplicate_jobs(prior + jobs))
+        return closed
+
+    def replace_jobs(self, jobs: list[Job]) -> Path:
+        """Persist EXACTLY `jobs` -- no merge, no dedup, no closure. Only for
+        audited, backed-up data migrations (dedup.repair)."""
+        return self._persist(jobs)
+
+    def _persist(self, jobs: list[Job]) -> Path:
         self.processed_dir.mkdir(parents=True, exist_ok=True)
         path = self.processed_dir / "canonical_jobs.json"
-        jobs = self._merge_with_existing(jobs, mark_missing_inactive=mark_missing_inactive, refreshed_sources=refreshed_sources)
-        with path.open("w", encoding="utf-8") as handle:
+        tmp = path.with_suffix(".json.tmp")
+        with tmp.open("w", encoding="utf-8") as handle:
             json.dump([job_to_dict(job) for job in jobs], handle, ensure_ascii=False, indent=2, sort_keys=True)
+        tmp.replace(path)
         return path
 
     def read_jobs(self) -> list[Job]:
@@ -93,6 +156,30 @@ class LocalJobStore:
         self.refresh_summary_path.write_text(json.dumps(_jsonable(payload), ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         return self.refresh_summary_path
 
+    def write_daily_report(self, payload: dict[str, Any]) -> Path:
+        """Latest daily-refresh report (overwritten) + append-only history,
+        so what each refresh actually did stays auditable."""
+        self.processed_dir.mkdir(parents=True, exist_ok=True)
+        data = _jsonable(payload)
+        tmp = self.daily_report_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        tmp.replace(self.daily_report_path)
+        with self.daily_report_history_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(data, ensure_ascii=False, sort_keys=True) + "\n")
+        return self.daily_report_path
+
+    def read_daily_report(self) -> dict[str, Any] | None:
+        if not self.daily_report_path.exists():
+            return None
+        payload = json.loads(self.daily_report_path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else None
+
+    def read_daily_report_history(self, limit: int = 30) -> list[dict[str, Any]]:
+        if not self.daily_report_history_path.exists():
+            return []
+        lines = [line for line in self.daily_report_history_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        return [json.loads(line) for line in lines[-limit:]]
+
     def read_saved_searches(self) -> list[dict[str, Any]]:
         if not self.saved_searches_path.exists():
             return []
@@ -103,23 +190,6 @@ class LocalJobStore:
         self.processed_dir.mkdir(parents=True, exist_ok=True)
         self.saved_searches_path.write_text(json.dumps(_jsonable(payload), ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         return self.saved_searches_path
-
-    def _merge_with_existing(self, incoming: list[Job], mark_missing_inactive: bool = True, refreshed_sources: set[str] | None = None) -> list[Job]:
-        existing = self.read_jobs()
-        if not existing:
-            return incoming
-        if not mark_missing_inactive:
-            return deduplicate_jobs(existing + incoming)
-        incoming_observation_keys = {
-            (observation.source_name, observation.source_job_id)
-            for job in incoming
-            for observation in job.source_observations
-        }
-        prior = [
-            _mark_missing_observations_inactive(job, incoming_observation_keys, refreshed_sources)
-            for job in existing
-        ]
-        return deduplicate_jobs(prior + incoming)
 
 
 def job_to_dict(job: Job) -> dict[str, Any]:
@@ -150,6 +220,7 @@ def job_from_dict(payload: dict[str, Any]) -> Job:
             raw_payload=item.get("raw_payload", {}),
             active=item.get("active", True),
             latest_observed_state=item.get("latest_observed_state", "active"),
+            deadline=_datetime(item["deadline"]) if item.get("deadline") else None,
         )
         for item in payload["source_observations"]
     ]
@@ -164,29 +235,6 @@ def job_from_dict(payload: dict[str, Any]) -> Job:
         raw_location=payload.get("raw_location"),
         workflow_status=WorkflowStatus(payload.get("workflow_status", WorkflowStatus.NEW.value)),
     )
-
-
-def _mark_inactive(job: Job) -> Job:
-    return replace(
-        job,
-        source_observations=[
-            replace(observation, active=False, latest_observed_state="DISAPPEARED")
-            for observation in job.source_observations
-        ],
-    )
-
-
-def _mark_missing_observations_inactive(job: Job, incoming_keys: set[tuple[str, str]], refreshed_sources: set[str] | None) -> Job:
-    if not refreshed_sources:
-        return _mark_inactive(job)
-    observations = []
-    for observation in job.source_observations:
-        key = (observation.source_name, observation.source_job_id)
-        if observation.source_name in refreshed_sources and key not in incoming_keys:
-            observations.append(replace(observation, active=False, latest_observed_state="DISAPPEARED"))
-        else:
-            observations.append(observation)
-    return replace(job, source_observations=observations)
 
 
 def _job_key(job: Job) -> str:

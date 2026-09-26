@@ -8,13 +8,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from jobintel.connectors.base import ConnectorQuery, JobSourceConnector, RawJobPayload, SourceHealth
+from jobintel.connectors.base import ConnectorQuery, JobSourceConnector, RawJobPayload, ScopeCollector, SourceHealth, SourceSnapshot
 from jobintel.connectors.utils import build_url, fetch_json, normalise_location, now_utc, parse_datetime, strip_html
 from jobintel.models.job import Job, SourceObservation
 
 
 WTTJ_SOURCE_NAME = "welcome_to_the_jungle"
 WELCOMEKIT_JOBS_URL = "https://www.welcomekit.co/api/v1/external/jobs"
+# Safety cap per organization; hitting it makes that organization's snapshot
+# incomplete (never closure-eligible) rather than silently "complete".
+WTTJ_MAX_PAGES = 50
 WTTJ_JOB_URL_PATTERN = re.compile(
     r"^https?://(?:www\.)?welcometothejungle\.com/(?:[a-z]{2}/)?companies/([^/?#]+)/jobs/([^/?#]+)",
     re.IGNORECASE,
@@ -44,61 +47,84 @@ class WelcomeToTheJungleConnector(JobSourceConnector):
         self.organization_references = organization_references
         self.api_key = api_key
 
+    supports_closure_inference = True
+
     def fetch_jobs(self, query: ConnectorQuery) -> list[RawJobPayload]:
+        return self.fetch_snapshot(query).payloads_or_raise()
+
+    def fetch_snapshot(self, query: ConnectorQuery) -> SourceSnapshot:
+        # One organization reference = one closure scope, prefixed so it can
+        # never collide with manual WTTJ imports (which share this source_name
+        # but carry no scope, so an API refresh can never close them).
         if not self.api_key:
             raise RuntimeError("Welcome to the Jungle official API ingestion requires WTTJ_API_KEY")
-        if not self.organization_references:
-            return []
         observed_at = now_utc()
-        jobs: list[RawJobPayload] = []
+        collector = ScopeCollector(query)
         per_page = max(1, min(query.limit, 100))
         for organization_reference in self.organization_references:
-            page = 1
-            while len(jobs) < query.limit:
-                url = build_url(
-                    WELCOMEKIT_JOBS_URL,
-                    {
-                        "organization_reference": organization_reference,
-                        "status": "published",
-                        "per_page": per_page,
-                        "page": page,
-                    },
-                )
-                payload = fetch_json(
-                    url,
-                    headers={
-                        "Accept": "application/json",
-                        "Authorization": f"Bearer {self.api_key}",
-                        "User-Agent": "jobintel-wttj/0.1",
-                    },
-                )
-                items = _jobs(payload)
-                if not items:
-                    break
-                for item in items:
-                    enriched = {**item, "_organization_reference": organization_reference, "_ingestion_method": "official_api"}
-                    if not _is_relevant(enriched, query):
-                        continue
-                    source_url = _wttj_url(enriched) or _application_url(enriched)
-                    apply_url = _application_url(enriched) or source_url
-                    source_id = _source_job_id(enriched) or _id_from_url(source_url) or f"{organization_reference}-{len(jobs) + 1}"
-                    jobs.append(
-                        RawJobPayload(
-                            source_name=self.source_name,
-                            source_job_id=source_id,
-                            source_url=source_url,
-                            canonical_application_url=apply_url,
-                            raw_payload=enriched,
-                            observed_at=observed_at,
-                            posted_at=parse_datetime(enriched.get("published_at") or enriched.get("created_at") or enriched.get("updated_at")),
-                        )
+            scope = f"official_api:{organization_reference}"
+            listed: list[RawJobPayload] = []
+            filtered_out = 0
+            exhausted = False
+            try:
+                for page in range(1, WTTJ_MAX_PAGES + 1):
+                    url = build_url(
+                        WELCOMEKIT_JOBS_URL,
+                        {
+                            "organization_reference": organization_reference,
+                            "status": "published",
+                            "per_page": per_page,
+                            "page": page,
+                        },
                     )
-                    if len(jobs) >= query.limit:
+                    payload = fetch_json(
+                        url,
+                        headers={
+                            "Accept": "application/json",
+                            "Authorization": f"Bearer {self.api_key}",
+                            "User-Agent": "jobintel-wttj/0.1",
+                        },
+                    )
+                    items = _jobs(payload)
+                    for item in items:
+                        enriched = {**item, "_organization_reference": organization_reference, "_ingestion_method": "official_api"}
+                        if not _is_relevant(enriched, query):
+                            filtered_out += 1
+                            continue
+                        source_url = _wttj_url(enriched) or _application_url(enriched)
+                        apply_url = _application_url(enriched) or source_url
+                        source_id = _source_job_id(enriched) or _id_from_url(source_url) or f"{organization_reference}-{len(listed) + 1}"
+                        listed.append(
+                            RawJobPayload(
+                                source_name=self.source_name,
+                                source_job_id=source_id,
+                                source_url=source_url,
+                                canonical_application_url=apply_url,
+                                raw_payload=enriched,
+                                observed_at=observed_at,
+                                posted_at=parse_datetime(enriched.get("published_at") or enriched.get("created_at") or enriched.get("updated_at")),
+                            )
+                        )
+                    if len(items) < per_page:
+                        exhausted = True
                         break
-                if len(items) < per_page:
-                    break
-                page += 1
-        return jobs[: query.limit]
+                    if len(listed) > query.limit:
+                        # Enough to prove truncation; ScopeCollector marks it.
+                        exhausted = True
+                        break
+            except Exception as exc:
+                collector.fail(scope, organization_reference, f"{type(exc).__name__}: {exc}")
+                continue
+            collector.add_scope(scope, listed, filtered_out=filtered_out, exhausted=exhausted)
+        return collector.snapshot()
+
+    def closure_scope(self, raw_payload: dict[str, Any]) -> str | None:
+        scope = super().closure_scope(raw_payload)
+        if scope:
+            return scope
+        if raw_payload.get("_ingestion_method") == "official_api" and raw_payload.get("_organization_reference"):
+            return f"official_api:{raw_payload['_organization_reference']}"
+        return None
 
     def health_check(self) -> SourceHealth:
         if not self.api_key:

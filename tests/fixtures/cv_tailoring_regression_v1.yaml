@@ -1,0 +1,397 @@
+schema_version: '1.0'
+source_asset: tests/fixtures/sources/cv_tailoring_regression_v1_source.md
+source_hash: 9b60579621d72948ccaec41d64087f411a3225da683d00ec5d30173d80a432b2
+transformation_version: '1.0'
+total_cases: 28
+release_blocking_pairs:
+  mclaren_vs_kpmg:
+  - RT-06
+  - RT-13
+  afra_pre_vs_post_phase_6_5:
+  - RT-17
+  - RT-18
+  session_tcp_observation_vs_packet_claim:
+  - RT-11
+  - RT-12
+  red_bull_pu_vs_barclays_kpmg:
+  - RT-22
+  - RT-04
+  - RT-13
+cases:
+- id: RT-01
+  context: Morgan Stanley general Technology/SWE graduate
+  expected_projects:
+  - Session Migration
+  - Financial Knowledge Intelligence Platform
+  - Full-Stack Recommendation Platform
+  - IoT Platform
+  rejected:
+  - Indy500_for_interest_only
+  - STM32_for_variety
+  assertions:
+  - general SWE relevance outranks motorsport novelty
+  - no artificial portfolio diversity
+  source_case_id: RT-01
+  source_asset: tests/fixtures/sources/cv_tailoring_regression_v1_source.md
+  source_hash: 9b60579621d72948ccaec41d64087f411a3225da683d00ec5d30173d80a432b2
+- id: RT-02
+  context: 'Morgan Stanley: flagship projects may receive more space'
+  expected_bullets:
+    Session Migration: 4
+    Full-Stack Recommendation Platform: 4
+    Financial Knowledge Intelligence Platform: 3
+    IoT Platform: 3
+  rejected:
+  - equal bullet distribution across all projects
+  - shallow 2-bullet distribution for flagships
+  assertions:
+  - flagship projects may receive more space
+  - space follows evidence depth and JD alignment
+  source_case_id: RT-02
+  source_asset: tests/fixtures/sources/cv_tailoring_regression_v1_source.md
+  source_hash: 9b60579621d72948ccaec41d64087f411a3225da683d00ec5d30173d80a432b2
+- id: RT-03
+  context: Morgan Stanley internship compression
+  preferred_wording_direction: concise, factual summary of data reconciliation, SQL/Python/Excel,
+    and inventory validation
+  rejected:
+  - inflating commercial role to enterprise architecture or systems engineering
+  - erasing technical details in favor of buzzwords
+  assertions:
+  - internship compression protects one-page space
+  - ownership verbs must match actual responsibility
+  source_case_id: RT-03
+  source_asset: tests/fixtures/sources/cv_tailoring_regression_v1_source.md
+  source_hash: 9b60579621d72948ccaec41d64087f411a3225da683d00ec5d30173d80a432b2
+- id: RT-04
+  context: Barclays Technology Developer Graduate
+  expected_projects:
+  - Session Migration
+  - Auditable Financial Research Agent
+  - Full-Stack Recommendation Platform
+  - IoT Event Platform
+  assertions:
+  - broad SWE portfolio
+  - financial projects remain separate
+  source_case_id: RT-04
+  source_asset: tests/fixtures/sources/cv_tailoring_regression_v1_source.md
+  source_hash: 9b60579621d72948ccaec41d64087f411a3225da683d00ec5d30173d80a432b2
+- id: RT-05
+  context: Barclays skills
+  expected:
+    cpp_prominence: false
+  assertions:
+  - JD keyword cannot override weak evidence
+  source_case_id: RT-05
+  source_asset: tests/fixtures/sources/cv_tailoring_regression_v1_source.md
+  source_hash: 9b60579621d72948ccaec41d64087f411a3225da683d00ec5d30173d80a432b2
+- id: RT-06
+  context: McLaren Junior HPC Systems Engineer
+  expected_projects:
+  - Session Migration
+  - Auditable Financial Research Agent
+  - Edge-to-Cloud IoT
+  - Indy500
+  assertions:
+  - systems evidence moves first
+  - full-stack is downranked
+  source_case_id: RT-06
+  source_asset: tests/fixtures/sources/cv_tailoring_regression_v1_source.md
+  source_hash: 9b60579621d72948ccaec41d64087f411a3225da683d00ec5d30173d80a432b2
+- id: RT-07
+  context: McLaren missing HPC stack
+  forbidden_claims:
+  - Slurm experience
+  - HPC cluster administration
+  - parallel filesystem experience
+  assertions:
+  - adjacent evidence must not become exact missing skill
+  source_case_id: RT-07
+  source_asset: tests/fixtures/sources/cv_tailoring_regression_v1_source.md
+  source_hash: 9b60579621d72948ccaec41d64087f411a3225da683d00ec5d30173d80a432b2
+- id: RT-08
+  context: 'McLaren HPC: reposition Auditable away from finance'
+  expected_emphasis:
+  - Python orchestrator and state machine
+  - controlled workflow and failure classification
+  - retry/backoff and state management
+  - automated testing
+  rejected:
+  - stock trading terminology
+  - financial analysis as primary achievement
+  assertions:
+  - reposition project technical mechanism to match systems/HPC JD
+  - do not invent financial trading claims
+  source_case_id: RT-08
+  source_asset: tests/fixtures/sources/cv_tailoring_regression_v1_source.md
+  source_hash: 9b60579621d72948ccaec41d64087f411a3225da683d00ec5d30173d80a432b2
+- id: RT-09
+  context: 'McLaren HPC: Indy remains despite not being infrastructure'
+  expected_selected: Indy 500 Decision Support
+  rejected:
+  - generic CRUD or web application for variety
+  assertions:
+  - scientific modeling, reproducible Docker, and high test coverage outrank generic
+    CRUD
+  - technical rigor justifies fourth slot in systems role
+  source_case_id: RT-09
+  source_asset: tests/fixtures/sources/cv_tailoring_regression_v1_source.md
+  source_hash: 9b60579621d72948ccaec41d64087f411a3225da683d00ec5d30173d80a432b2
+- id: RT-10
+  context: 'McLaren Session Migration: metric precision'
+  allowed_metrics:
+  - 8/10 successful Docker migrations
+  - 5/5 native CRIU migrations
+  - 5/5 strict Telefork validations
+  rejected:
+  - conflating Telefork validation with native CRIU migration
+  - claiming 100% migration success rate
+  assertions:
+  - metric precision must reflect exact test scope
+  - cannot conflate distinct validation mechanisms
+  source_case_id: RT-10
+  source_asset: tests/fixtures/sources/cv_tailoring_regression_v1_source.md
+  source_hash: 9b60579621d72948ccaec41d64087f411a3225da683d00ec5d30173d80a432b2
+- id: RT-11
+  context: Session Migration TCP evidence
+  allowed:
+  - observed TCP four-tuple continuity
+  - session identity continuity
+  - counter progression
+  forbidden:
+  - no second SYN
+  - packet-level seamlessness
+  assertions:
+  - claim cannot exceed measurement boundary
+  source_case_id: RT-11
+  source_asset: tests/fixtures/sources/cv_tailoring_regression_v1_source.md
+  source_hash: 9b60579621d72948ccaec41d64087f411a3225da683d00ec5d30173d80a432b2
+- id: RT-12
+  context: Session Migration latency
+  evidence:
+    metric: client-observed peak request latency
+  forbidden_rewrite: downtime
+  assertions:
+  - metric semantics are immutable
+  source_case_id: RT-12
+  source_asset: tests/fixtures/sources/cv_tailoring_regression_v1_source.md
+  source_hash: 9b60579621d72948ccaec41d64087f411a3225da683d00ec5d30173d80a432b2
+- id: RT-13
+  context: KPMG Software Engineering in Tax
+  expected_projects:
+  - Auditable Financial Research Agent
+  - Full-Stack Recommendation Platform
+  - Edge-to-Cloud IoT
+  - Session Migration
+  forbidden_projects:
+  - Indy500
+  assertions:
+  - product/software lifecycle reverses systems ordering
+  source_case_id: RT-13
+  source_asset: tests/fixtures/sources/cv_tailoring_regression_v1_source.md
+  source_hash: 9b60579621d72948ccaec41d64087f411a3225da683d00ec5d30173d80a432b2
+- id: RT-14
+  context: 'KPMG: Full-Stack outranks deeper systems work'
+  expected_ordering:
+    higher_rank: Full-Stack Recommendation Platform
+    lower_rank: Session Migration
+  rejected:
+  - ranking deeper systems work ahead of directly relevant product full-stack work
+  assertions:
+  - target JD role positioning dictates rank over technical complexity
+  source_case_id: RT-14
+  source_asset: tests/fixtures/sources/cv_tailoring_regression_v1_source.md
+  source_hash: 9b60579621d72948ccaec41d64087f411a3225da683d00ec5d30173d80a432b2
+- id: RT-15
+  context: 'KPMG: remove Indy despite quality'
+  excluded:
+  - Indy 500 Decision Support
+  rejected:
+  - including Indy for variety or because motorsport makes portfolio interesting
+  assertions:
+  - relevance beats prestige
+  - no artificial portfolio diversity
+  source_case_id: RT-15
+  source_asset: tests/fixtures/sources/cv_tailoring_regression_v1_source.md
+  source_hash: 9b60579621d72948ccaec41d64087f411a3225da683d00ec5d30173d80a432b2
+- id: RT-16
+  context: KPMG project-space allocation
+  expected_bullets:
+  - 4
+  - 4
+  - 3
+  - 3
+  scope: historical_case_only
+  assertions:
+  - flagships may receive more space
+  - do not generalise exact allocation
+  source_case_id: RT-16
+  source_asset: tests/fixtures/sources/cv_tailoring_regression_v1_source.md
+  source_hash: 9b60579621d72948ccaec41d64087f411a3225da683d00ec5d30173d80a432b2
+- id: RT-17
+  context: Auditable before live validation completed
+  forbidden_claims:
+  - completed real-model benchmark
+  - completed live Gemini validation
+  assertions:
+  - no future evidence leakage
+  source_case_id: RT-17
+  source_asset: tests/fixtures/sources/cv_tailoring_regression_v1_source.md
+  source_hash: 9b60579621d72948ccaec41d64087f411a3225da683d00ec5d30173d80a432b2
+- id: RT-18
+  context: Auditable after Phase 6.5
+  allowed_claims:
+    executions: 126
+    unsupported_claim_baseline: 82%
+    unsupported_claim_full_pipeline: 0%
+    scope: tested synthetic subset
+  forbidden:
+  - production_generalisation
+  - hallucinations_eliminated
+  assertions:
+  - new verified evidence may update CV
+  - scope qualifier remains
+  source_case_id: RT-18
+  source_asset: tests/fixtures/sources/cv_tailoring_regression_v1_source.md
+  source_hash: 9b60579621d72948ccaec41d64087f411a3225da683d00ec5d30173d80a432b2
+- id: RT-19
+  context: Auditable technology title
+  forbidden_or_downranked:
+  - Gemini API
+  reason: canonical live execution used Antigravity CLI
+  assertions:
+  - stack labels are factual claims
+  source_case_id: RT-19
+  source_asset: tests/fixtures/sources/cv_tailoring_regression_v1_source.md
+  source_hash: 9b60579621d72948ccaec41d64087f411a3225da683d00ec5d30173d80a432b2
+- id: RT-20
+  context: IoT cloud/backend positioning
+  expected_emphasis:
+  - event-driven flow
+  - retry deduplication
+  - timestamp guards
+  - compare-and-swap
+  - integration testing
+  forbidden:
+  - exactly-once
+  - production-ready
+  - unsupported throughput
+  assertions:
+  - mechanisms beat service enumeration
+  source_case_id: RT-20
+  source_asset: tests/fixtures/sources/cv_tailoring_regression_v1_source.md
+  source_hash: 9b60579621d72948ccaec41d64087f411a3225da683d00ec5d30173d80a432b2
+- id: RT-21
+  context: 'Full-Stack: CI must be concrete'
+  expected_emphasis:
+  - frontend typecheck
+  - unit tests
+  - production build
+  - Playwright E2E and accessibility
+  - PostgreSQL integration verification
+  rejected:
+  - generic CI/CD pipeline claims
+  - unsupported continuous deployment claims
+  assertions:
+  - concrete mechanisms beat generic responsibility language
+  source_case_id: RT-21
+  source_asset: tests/fixtures/sources/cv_tailoring_regression_v1_source.md
+  source_hash: 9b60579621d72948ccaec41d64087f411a3225da683d00ec5d30173d80a432b2
+- id: RT-22
+  context: Red Bull PU engineering role
+  expected_projects:
+  - Session Migration
+  - STM32
+  - Indy500
+  - Edge-to-Cloud IoT
+  excluded:
+  - Auditable Financial Research Agent
+  forbidden_skills:
+  - MATLAB/Simulink_without_evidence
+  - ECU_without_evidence
+  - HIL_without_evidence
+  - controls_without_evidence
+  assertions:
+  - flagship project can be omitted
+  - motorsport engineering evidence is JD-specific
+  source_case_id: RT-22
+  source_asset: tests/fixtures/sources/cv_tailoring_regression_v1_source.md
+  source_hash: 9b60579621d72948ccaec41d64087f411a3225da683d00ec5d30173d80a432b2
+- id: RT-23
+  context: Motorsport society contribution
+  allowed_ownership: contributed
+  forbidden_implication:
+  - designed_vehicle
+  - built_vehicle
+  - core_vehicle_engineer
+  assertions:
+  - ownership verbs must match contribution
+  source_case_id: RT-23
+  source_asset: tests/fixtures/sources/cv_tailoring_regression_v1_source.md
+  source_hash: 9b60579621d72948ccaec41d64087f411a3225da683d00ec5d30173d80a432b2
+- id: RT-24
+  context: STM32 versioned evidence
+  historical_version:
+    physical_prototype_validated: true
+  hardened_version:
+    software_hardening: true
+    physically_revalidated: false
+  assertions:
+  - validation does not transfer between versions
+  source_case_id: RT-24
+  source_asset: tests/fixtures/sources/cv_tailoring_regression_v1_source.md
+  source_hash: 9b60579621d72948ccaec41d64087f411a3225da683d00ec5d30173d80a432b2
+- id: RT-25
+  context: Respiratory ML
+  downrank_metric: old ~94% accuracy
+  expected_emphasis:
+  - grouped_patient_independent_evaluation
+  - pipeline
+  - reproducibility
+  assertions:
+  - metric validity outranks flattering value
+  source_case_id: RT-25
+  source_asset: tests/fixtures/sources/cv_tailoring_regression_v1_source.md
+  source_hash: 9b60579621d72948ccaec41d64087f411a3225da683d00ec5d30173d80a432b2
+- id: RT-26
+  context: Financial project identity
+  separate_entities:
+  - Financial Knowledge Intelligence Platform
+  - Auditable Financial Research Agent
+  forbidden:
+  - merge_projects
+  - cross_project_metric_leakage
+  assertions:
+  - Evidence Bank entity boundaries are immutable
+  source_case_id: RT-26
+  source_asset: tests/fixtures/sources/cv_tailoring_regression_v1_source.md
+  source_hash: 9b60579621d72948ccaec41d64087f411a3225da683d00ec5d30173d80a432b2
+- id: RT-27
+  context: one-page overflow
+  expected_strategy:
+  - remove_redundancy
+  - compress_low_value_content
+  - protect_high_value_evidence
+  - preserve_readability
+  forbidden_strategy:
+  - shrink_everything_first
+  assertions:
+  - one page is prioritisation, not maximum density
+  source_case_id: RT-27
+  source_asset: tests/fixtures/sources/cv_tailoring_regression_v1_source.md
+  source_hash: 9b60579621d72948ccaec41d64087f411a3225da683d00ec5d30173d80a432b2
+- id: RT-28
+  context: 'FDM/general Graduate SWE: don''t over-tailor to motorsport'
+  expected_projects:
+  - Session Migration
+  - Edge-to-Cloud IoT
+  - Full-Stack Recommendation Platform
+  - Financial Knowledge Intelligence Platform
+  rejected:
+  - motorsport projects for interest only
+  assertions:
+  - general SWE relevance outranks motorsport novelty
+  - personal interest does not override target-role identity
+  source_case_id: RT-28
+  source_asset: tests/fixtures/sources/cv_tailoring_regression_v1_source.md
+  source_hash: 9b60579621d72948ccaec41d64087f411a3225da683d00ec5d30173d80a432b2

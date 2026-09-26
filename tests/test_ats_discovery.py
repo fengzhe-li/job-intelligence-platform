@@ -234,6 +234,37 @@ class ATSDiscoveryTests(unittest.TestCase):
         self.assertEqual(verification.status, "verified")
         self.assertEqual(verification.jobs_available, 1)
 
+    def test_workday_url_detection_and_token_extraction(self) -> None:
+        html = '<a href="https://darktrace.wd3.myworkdayjobs.com/DarktaceExternal">Careers</a>'
+
+        candidates = detect_ats_candidates(html, "https://darktrace.com/careers")
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].connector_type, "workday")
+        self.assertEqual(candidates[0].connector_token, "darktrace.wd3/DarktaceExternal")
+
+    def test_workday_url_detection_stops_site_slug_at_next_path_segment(self) -> None:
+        # A real observed link (Lloyds Banking Group) includes a page-id
+        # suffix after the site slug -- only the site slug itself belongs in
+        # the token, not the whole path.
+        html = '<a href="https://lbg.wd3.myworkdayjobs.com/LBG_Careers/page/efb54bb3afa81000ff6c0e9c3afc0000">Careers</a>'
+
+        candidates = detect_ats_candidates(html, "https://lloydsbankinggroup.com/careers")
+
+        self.assertEqual(candidates[0].connector_token, "lbg.wd3/LBG_Careers")
+
+    def test_valid_workday_feed_uses_public_cxs_jobs_url(self) -> None:
+        seen_urls = []
+
+        verification = verify_candidate(
+            ATSCandidate("workday", "acme.wd3/AcmeCareers", "https://acme.wd3.myworkdayjobs.com/AcmeCareers"),
+            fetch_json_func=lambda url: seen_urls.append(url) or {"jobPostings": [{"externalPath": "/job/x/Title_1"}]},
+        )
+
+        self.assertEqual(seen_urls, ["https://acme.wd3.myworkdayjobs.com/wday/cxs/acme/AcmeCareers/jobs"])
+        self.assertEqual(verification.status, "verified")
+        self.assertEqual(verification.jobs_available, 1)
+
     def test_direct_ats_check_detects_url_and_verifies(self) -> None:
         verification = check_ats_url("https://job-boards.greenhouse.io/acme", fetch_json_func=lambda _: {"jobs": [{"id": 1}]})
 

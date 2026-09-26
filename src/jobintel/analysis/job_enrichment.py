@@ -5,7 +5,13 @@ from jobintel.analysis.role_tracks import extract_skill_requirements, infer_role
 from jobintel.models.job import Job
 
 
-def enrich_job(job: Job, candidate_graduation_year: int = 2026) -> Job:
+def enrich_job(job: Job, candidate_graduation_year: int) -> Job:
+    """`candidate_graduation_year` is the candidate's actual degree completion year.
+
+    It is compared only against a job's explicit graduation-year eligibility text.
+    A job's intake/start year is a separate, non-filtering concept -- see
+    `analysis.evidence.detect_graduation_year`.
+    """
     job.role_track_profile = infer_role_track_profile(job.title, job.description)
     job.skill_requirements = extract_skill_requirements(job.description)
     job.sponsorship = detect_sponsorship(job.description)

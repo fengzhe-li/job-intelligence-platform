@@ -2,9 +2,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from jobintel.connectors.base import ConnectorQuery, JobSourceConnector, RawJobPayload, SourceHealth
+from jobintel.connectors.base import ConnectorQuery, JobSourceConnector, RawJobPayload, ScopeCollector, SourceHealth, SourceSnapshot
 from jobintel.connectors.utils import build_url, fetch_json, normalise_location, now_utc, parse_datetime, strip_html
 from jobintel.models.job import Job, SourceObservation
+
+# SmartRecruiters' postings API is genuinely paginated (limit/offset, with
+# `totalFound` in the response) -- previously this connector only ever fetched
+# offset=0, silently missing any company posting more than one page of jobs.
+MAX_PAGES_PER_COMPANY = 10
 
 
 class SmartRecruitersConnector(JobSourceConnector):
@@ -13,22 +18,37 @@ class SmartRecruitersConnector(JobSourceConnector):
     def __init__(self, company_identifiers: tuple[str, ...]) -> None:
         self.company_identifiers = company_identifiers
 
+    supports_closure_inference = True
+
     def fetch_jobs(self, query: ConnectorQuery) -> list[RawJobPayload]:
+        return self.fetch_snapshot(query).payloads_or_raise()
+
+    def fetch_snapshot(self, query: ConnectorQuery) -> SourceSnapshot:
+        # Scope = company + the country filter sent to the API, so a UK-only
+        # listing can only ever close jobs previously seen in a UK-only
+        # listing. Observations stored before scopes existed carry no country
+        # and are therefore never closed by absence (fail-closed).
         observed_at = now_utc()
-        jobs: list[RawJobPayload] = []
+        collector = ScopeCollector(query)
+        page_size = min(query.limit, 100) or 100
+        country = _country_filter(query.location)
         for company_identifier in self.company_identifiers:
-            url = build_url(
-                f"https://api.smartrecruiters.com/v1/companies/{company_identifier}/postings",
-                {"limit": min(query.limit, 100), "offset": 0, "country": "gb" if "kingdom" in query.location.casefold() or query.location.casefold() == "uk" else None},
-            )
-            payload = fetch_json(url)
-            for item in _jobs(payload):
+            scope = f"{company_identifier}@{country or 'all'}"
+            try:
+                items, exhausted = _fetch_all_postings(company_identifier, page_size, country)
+            except Exception as exc:
+                collector.fail(scope, company_identifier, f"{type(exc).__name__}: {exc}")
+                continue
+            listed: list[RawJobPayload] = []
+            filtered_out = 0
+            for item in items:
                 detail = _detail_payload(company_identifier, item)
                 if not _is_relevant(detail, query):
+                    filtered_out += 1
                     continue
                 source_id = str(detail.get("id") or item.get("id") or item.get("uuid") or item.get("ref") or item.get("name") or "unknown")
                 source_url = _source_url(detail, item, company_identifier, source_id)
-                jobs.append(
+                listed.append(
                     RawJobPayload(
                         source_name=self.source_name,
                         source_job_id=source_id,
@@ -39,7 +59,8 @@ class SmartRecruitersConnector(JobSourceConnector):
                         posted_at=parse_datetime(detail.get("releasedDate") or detail.get("createdOn") or detail.get("updatedOn")),
                     )
                 )
-        return jobs[: query.limit]
+            collector.add_scope(scope, listed, filtered_out=filtered_out, exhausted=exhausted)
+        return collector.snapshot()
 
     def health_check(self) -> SourceHealth:
         if not self.company_identifiers:
@@ -77,6 +98,35 @@ def _jobs(payload: Any) -> list[dict[str, Any]]:
     if isinstance(payload, dict) and isinstance(payload.get("content"), list):
         return [item for item in payload["content"] if isinstance(item, dict)]
     return []
+
+
+def _country_filter(location: str) -> str | None:
+    return "gb" if "kingdom" in location.casefold() or location.casefold() == "uk" else None
+
+
+def _fetch_all_postings(company_identifier: str, page_size: int, country: str | None) -> tuple[list[dict[str, Any]], bool]:
+    """Returns (postings, exhausted). `exhausted` is False when the page cap
+    stopped pagination before the listing's real end -- such a listing is
+    not a complete snapshot."""
+    items: list[dict[str, Any]] = []
+    offset = 0
+    for _ in range(MAX_PAGES_PER_COMPANY):
+        url = build_url(
+            f"https://api.smartrecruiters.com/v1/companies/{company_identifier}/postings",
+            {"limit": page_size, "offset": offset, "country": country},
+        )
+        payload = fetch_json(url)
+        if not (isinstance(payload, dict) and isinstance(payload.get("content"), list)):
+            raise ValueError("unexpected response shape: no `content` list")
+        page_items = _jobs(payload)
+        items.extend(page_items)
+        total_found = payload.get("totalFound")
+        offset += page_size
+        if len(page_items) < page_size:
+            return items, True
+        if isinstance(total_found, int) and offset >= total_found:
+            return items, True
+    return items, False
 
 
 def _detail_payload(company_identifier: str, item: dict[str, Any]) -> dict[str, Any]:

@@ -59,6 +59,15 @@ SMARTRECRUITERS_PATTERNS = (
     re.compile(r"https?://jobs\.smartrecruiters\.com/([^/?#\"'<>]+)(?:[/?#][^\"'<>]*)?", re.IGNORECASE),
     re.compile(r"https?://api\.smartrecruiters\.com/v1/companies/([^/?#\"'<>]+)/postings(?:[/?#][^\"'<>]*)?", re.IGNORECASE),
 )
+# A Workday-hosted careers site link looks like
+# https://{tenant}.{wdN}.myworkdayjobs.com/[<locale>/]<site>. Both the wdN
+# shard number and the site slug vary per company and are required to build a
+# working CXS API URL (see connectors/workday.py) -- a bare tenant name alone
+# is not enough, which is why this captures host_part="tenant.wdN" as one
+# token component alongside the site.
+WORKDAY_PATTERNS = (
+    re.compile(r"https?://([a-z0-9-]+\.wd\d+)\.myworkdayjobs\.com/(?:[a-z]{2}(?:-[A-Z]{2})?/)?([^/?#\"'<>]+)", re.IGNORECASE),
+)
 
 
 def discover_registry(
@@ -78,6 +87,14 @@ def discover_registry(
 
 
 def discover_company_entry(entry: dict[str, Any], fetch_text: FetchText) -> dict[str, Any]:
+    if entry.get("manually_excluded"):
+        # A human explicitly decided this company/candidate must never be
+        # auto-enabled (e.g. Juniper Networks UK resolves to HPE's shared,
+        # unscoped Workday tenant post-acquisition) -- leave it completely
+        # untouched. Re-running discovery must never re-find and re-surface
+        # the same candidate as if this decision had never been made. Only
+        # `reinclude_company` (an explicit human action) can undo this.
+        return entry
     if entry.get("verification_status") == "verified" and entry.get("enabled"):
         return entry
     careers_url = entry.get("careers_url")
@@ -100,6 +117,25 @@ def discover_company_entry(entry: dict[str, Any], fetch_text: FetchText) -> dict
             "enabled": False,
             "verification_status": "pending_ats_discovery",
             "verification_url": careers_url,
+            # The fetch just succeeded -- clear any stale error from a previous
+            # failed attempt so this field accurately reflects the most recent
+            # discovery attempt, not history. Without this, a page that's now
+            # reachable but genuinely doesn't use a supported ATS looks
+            # indistinguishable from one that's still unreachable.
+            "ats_discovery_error": None,
+            # Clear any stale connector guess from a previous discovery/manual-add.
+            # A company can migrate away from a previously-detected ATS (e.g.
+            # Darktrace moving to Workday); without this, candidate_from_entry
+            # would keep trying to verify against the old, now-wrong ATS guess
+            # forever, and jobs_available/verification_message would describe a
+            # provider the company no longer uses.
+            "connector_type": None,
+            "connector_token": None,
+            "greenhouse_board_token": None,
+            "lever_site_token": None,
+            "ashby_board_name": None,
+            "workable_account": None,
+            "smartrecruiters_company_identifier": None,
         }
     candidate = candidates[0]
     return _merge_candidate(entry, candidate, "discovered_pending_verification", enabled=False)
@@ -130,6 +166,92 @@ def add_manual_ats_url(
     path = Path(registry_path)
     entries = json.loads(path.read_text(encoding="utf-8"))
     updated, result = add_manual_ats_url_to_entries(entries, company_name, ats_url, fetch_json_func)
+    if write:
+        path.write_text(json.dumps(updated, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return result
+
+
+def exclude_company_entry(entry: dict[str, Any], reason: str) -> dict[str, Any]:
+    """Marks one registry entry as manually excluded -- an explicit human
+    decision that discovery/verification must never override (see
+    discover_company_entry/verify_company_entry). Forces `enabled=False`
+    immediately, on top of the persistent flag, so the exclusion takes effect
+    the moment it's written, not just on the next discovery/verify cycle.
+    """
+    if not reason or not reason.strip():
+        raise ValueError("An exclusion reason is required -- manual exclusion must carry provenance, not just a bare flag.")
+    return {
+        **entry,
+        "enabled": False,
+        "manually_excluded": True,
+        "exclusion_reason": reason.strip(),
+        "excluded_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def reinclude_company_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """Explicit human action to undo a manual exclusion. Clears the exclusion
+    fields and resets verification_status so a normal discover/verify cycle
+    picks the company up fresh next time, rather than trusting whatever
+    connector_type/connector_token happened to be left on the entry from
+    before the exclusion.
+    """
+    return {
+        **entry,
+        "manually_excluded": False,
+        "exclusion_reason": None,
+        "excluded_at": None,
+        "verification_status": "pending_ats_discovery",
+        "enabled": False,
+        "connector_type": None,
+        "connector_token": None,
+    }
+
+
+def exclude_company(
+    company_name: str,
+    reason: str,
+    registry_path: Path | str = "config/target_companies.json",
+    write: bool = True,
+) -> dict[str, Any]:
+    path = Path(registry_path)
+    entries = json.loads(path.read_text(encoding="utf-8"))
+    updated: list[dict[str, Any]] = []
+    result: dict[str, Any] | None = None
+    matched = False
+    for entry in entries:
+        if entry.get("company_name", "").casefold() == company_name.casefold():
+            matched = True
+            result = exclude_company_entry(entry, reason)
+            updated.append(result)
+        else:
+            updated.append(entry)
+    if not matched:
+        raise ValueError(f"No registry entry named {company_name!r} found.")
+    if write:
+        path.write_text(json.dumps(updated, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return result
+
+
+def reinclude_company(
+    company_name: str,
+    registry_path: Path | str = "config/target_companies.json",
+    write: bool = True,
+) -> dict[str, Any]:
+    path = Path(registry_path)
+    entries = json.loads(path.read_text(encoding="utf-8"))
+    updated: list[dict[str, Any]] = []
+    result: dict[str, Any] | None = None
+    matched = False
+    for entry in entries:
+        if entry.get("company_name", "").casefold() == company_name.casefold():
+            matched = True
+            result = reinclude_company_entry(entry)
+            updated.append(result)
+        else:
+            updated.append(entry)
+    if not matched:
+        raise ValueError(f"No registry entry named {company_name!r} found.")
     if write:
         path.write_text(json.dumps(updated, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return result
@@ -191,9 +313,30 @@ def read_manual_ats_records(import_path: Path | str) -> list[dict[str, str]]:
 
 
 def verify_company_entry(entry: dict[str, Any], fetch_json_func: FetchJson | None) -> dict[str, Any]:
+    if entry.get("manually_excluded"):
+        # Same reasoning as discover_company_entry -- never re-verify (and
+        # therefore never re-enable) a manually excluded company, even though
+        # candidate_from_entry() might still find a usable connector_type/
+        # connector_token left on the entry for audit purposes.
+        return entry
     candidate = candidate_from_entry(entry)
     if candidate is None:
-        return {**entry, "enabled": False, "verification_status": entry.get("verification_status") or "pending_ats_discovery"}
+        return {
+            **entry,
+            "enabled": False,
+            "verification_status": entry.get("verification_status") or "pending_ats_discovery",
+            # No connector candidate anymore (e.g. discovery just cleared a stale
+            # guess after the company migrated ATS providers) -- clear leftover
+            # verify-time metadata from a previous candidate so it doesn't keep
+            # describing a provider we're no longer trying to verify against.
+            "jobs_available": None,
+            "ats_verification_error": None,
+            "verification_requested_url": None,
+            "verification_exception_type": None,
+            "verification_http_status_code": None,
+            "verification_failure_kind": None,
+            "verification_message": None,
+        }
     verification = verify_candidate(candidate, fetch_json_func)
     if verification.status == "verified":
         return {
@@ -249,13 +392,19 @@ def detect_ats_candidates(html: str, base_url: str) -> list[ATSCandidate]:
             token = _clean_token(match.group(1))
             if token:
                 candidates.append(ATSCandidate("smartrecruiters", token, _absolute(match.group(0), base_url)))
+    for pattern in WORKDAY_PATTERNS:
+        for match in pattern.finditer(text):
+            host_part = match.group(1).casefold()
+            site = _clean_token(match.group(2))
+            if site:
+                candidates.append(ATSCandidate("workday", f"{host_part}/{site}", _absolute(match.group(0), base_url)))
     return _dedupe_candidates(candidates)
 
 
 def candidate_from_entry(entry: dict[str, Any]) -> ATSCandidate | None:
     connector_type = entry.get("connector_type")
     connector_token = entry.get("connector_token")
-    if connector_type in {"greenhouse", "lever", "ashby", "workable", "smartrecruiters"} and connector_token:
+    if connector_type in {"greenhouse", "lever", "ashby", "workable", "smartrecruiters", "workday"} and connector_token:
         return ATSCandidate(connector_type, connector_token, entry.get("verification_url") or entry.get("careers_url") or "")
     if entry.get("greenhouse_board_token"):
         return ATSCandidate("greenhouse", entry["greenhouse_board_token"], entry.get("verification_url") or entry.get("careers_url") or "")
@@ -325,6 +474,16 @@ def verify_candidate(candidate: ATSCandidate, fetch_json_func: FetchJson | None 
                 message="valid_empty_job_feed" if not jobs else "valid_job_feed",
                 requested_url=url,
             )
+    if candidate.connector_type == "workday":
+        jobs = payload.get("jobPostings") if isinstance(payload, dict) else None
+        if isinstance(jobs, list):
+            return ATSVerification(
+                candidate,
+                "verified",
+                jobs_available=len(jobs),
+                message="valid_empty_job_feed" if not jobs else "valid_job_feed",
+                requested_url=url,
+            )
     return ATSVerification(
         candidate,
         "invalid_feed",
@@ -354,6 +513,11 @@ def public_feed_url(candidate: ATSCandidate) -> str:
         return f"https://www.workable.com/api/accounts/{candidate.connector_token}?details=true"
     if candidate.connector_type == "smartrecruiters":
         return f"https://api.smartrecruiters.com/v1/companies/{candidate.connector_token}/postings?limit=100&offset=0&country=gb"
+    if candidate.connector_type == "workday":
+        from jobintel.connectors.workday import parse_workday_token
+
+        host, tenant, site = parse_workday_token(candidate.connector_token)
+        return f"https://{host}/wday/cxs/{tenant}/{site}/jobs"
     raise ValueError(f"Unsupported connector type: {candidate.connector_type}")
 
 
@@ -402,6 +566,10 @@ def _merge_candidate(entry: dict[str, Any], candidate: ATSCandidate, status: str
         "verification_status": status,
         "verification_url": candidate.verification_url,
         "enabled": enabled,
+        # A candidate was just found (discovery succeeded) -- clear any stale
+        # error from a previous failed attempt. Same reasoning as
+        # discover_company_entry's no-candidate branch.
+        "ats_discovery_error": None,
     }
     if candidate.connector_type == "greenhouse":
         updated["greenhouse_board_token"] = candidate.connector_token
@@ -435,22 +603,41 @@ def _manual_company_entry(company_name: str, ats_url: str) -> dict[str, Any]:
 
 
 def _fetch_text(url: str) -> str:
-    request = urllib.request.Request(url, headers={"User-Agent": "jobintel-ats-discovery/0.1", "Accept": "text/html,*/*"})
+    # A standard browser-like User-Agent, not a custom bot string: confirmed during
+    # the Phase 2.6 audit that many corporate WAFs reject an obviously
+    # bot-identifying UA outright (a basic UA-sniffing rule, not a genuine
+    # anti-bot/CAPTCHA challenge) even though the same plain-HTTP GET of the same
+    # public careers page succeeds fine with an ordinary browser UA. This is a
+    # different, much weaker mechanism than the Cloudflare managed-challenge pages
+    # confirmed for Gradcracker/Bright Network (see docs/SOURCE_COVERAGE.md),
+    # which are NOT bypassed anywhere in this project.
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        },
+    )
     with urllib.request.urlopen(request, timeout=15) as response:
         return response.read().decode("utf-8", errors="ignore")
 
 
 def _fetch_json_for_verification(url: str) -> Any:
-    request = urllib.request.Request(
-        url,
-        headers={
-            "Accept": "application/json",
-            "User-Agent": "jobintel-ats-verifier/0.1 (+https://github.com/local/jobintel)",
-        },
-    )
+    # Workday's CXS jobs endpoint requires a POST with a JSON search body --
+    # every other supported ATS's feed is a plain GET. Detected by path shape
+    # so this stays a single-argument (url-only) fetcher, matching every
+    # existing caller/test's expectation.
+    body = json.dumps({"appliedFacets": {}, "limit": 1, "offset": 0, "searchText": ""}).encode("utf-8") if "/wday/cxs/" in url else None
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "jobintel-ats-verifier/0.1 (+https://github.com/local/jobintel)",
+    }
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, data=body, headers=headers, method="POST" if body is not None else "GET")
     with urllib.request.urlopen(request, timeout=20) as response:
-        body = response.read().decode("utf-8")
-    return json.loads(body)
+        response_body = response.read().decode("utf-8")
+    return json.loads(response_body)
 
 
 def _verification_metadata(verification: ATSVerification) -> dict[str, Any]:

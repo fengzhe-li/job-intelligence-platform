@@ -3,8 +3,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from jobintel.connectors.base import ConnectorQuery, JobSourceConnector, RawJobPayload, SourceHealth
-from jobintel.connectors.utils import fetch_json, normalise_location, now_utc, parse_datetime, strip_html
+from jobintel.connectors.base import ConnectorQuery, JobSourceConnector, RawJobPayload, ScopeCollector, SourceHealth, SourceSnapshot
+from jobintel.connectors.utils import fetch_json, normalise_location, now_utc, parse_datetime, strip_html, text_or_none
 from jobintel.models.job import Job, SourceObservation
 
 
@@ -14,17 +14,39 @@ class GreenhouseConnector(JobSourceConnector):
     def __init__(self, board_tokens: tuple[str, ...]) -> None:
         self.board_tokens = board_tokens
 
+    supports_closure_inference = True
+
     def fetch_jobs(self, query: ConnectorQuery) -> list[RawJobPayload]:
+        return self.fetch_snapshot(query).payloads_or_raise()
+
+    def fetch_snapshot(self, query: ConnectorQuery) -> SourceSnapshot:
+        # One board = one closure scope. The board API returns the board's
+        # full current listing in one response (no pagination), so a board is
+        # complete unless it failed, was keyword-filtered, or was truncated.
         observed_at = now_utc()
-        jobs: list[RawJobPayload] = []
+        collector = ScopeCollector(query)
         for token in self.board_tokens:
-            url = f"https://boards-api.greenhouse.io/v1/boards/{token}/jobs?content=true"
-            payload = fetch_json(url)
+            try:
+                url = f"https://boards-api.greenhouse.io/v1/boards/{token}/jobs?content=true"
+                payload = fetch_json(url)
+            except Exception as exc:
+                # One broken board must not lose every other board's results this
+                # cycle -- collect the failure and keep going.
+                collector.fail(token, token, f"{type(exc).__name__}: {exc}")
+                continue
+            if not (isinstance(payload, dict) and isinstance(payload.get("jobs"), list)):
+                # Never read an unrecognised response as "board is empty" --
+                # that would be a complete snapshot closing every job on it.
+                collector.fail(token, token, "unexpected response shape: no `jobs` list")
+                continue
+            listed: list[RawJobPayload] = []
+            filtered_out = 0
             for item in payload.get("jobs", []):
                 if not _is_relevant(item, query):
+                    filtered_out += 1
                     continue
                 source_url = item.get("absolute_url") or f"https://boards.greenhouse.io/{token}/jobs/{item.get('id')}"
-                jobs.append(
+                listed.append(
                     RawJobPayload(
                         source_name=self.source_name,
                         source_job_id=str(item["id"]),
@@ -35,7 +57,11 @@ class GreenhouseConnector(JobSourceConnector):
                         posted_at=parse_datetime(item.get("updated_at")),
                     )
                 )
-        return jobs[: query.limit]
+            collector.add_scope(token, listed, filtered_out=filtered_out)
+        return collector.snapshot()
+
+    def closure_scope(self, raw_payload: dict[str, Any]) -> str | None:
+        return super().closure_scope(raw_payload) or text_or_none(raw_payload.get("_board_token"))
 
     def health_check(self) -> SourceHealth:
         if not self.board_tokens:

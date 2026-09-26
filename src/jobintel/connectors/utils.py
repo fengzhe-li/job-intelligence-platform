@@ -12,10 +12,95 @@ from jobintel.models.job import Location
 from jobintel.models.taxonomy import WorkMode
 
 
-def fetch_json(url: str, timeout_seconds: int = 20, headers: dict[str, str] | None = None) -> Any:
-    request = urllib.request.Request(url, headers=headers or {"Accept": "application/json", "User-Agent": "jobintel/0.1"})
+def fetch_json(url: str, timeout_seconds: int = 20, headers: dict[str, str] | None = None, data: dict[str, Any] | None = None) -> Any:
+    # `data` (JSON-serialised as the request body) switches this to a POST --
+    # needed for Workday's CXS endpoint, which its own careers-site frontend
+    # calls with POST + a JSON search body (confirmed live, Phase 2.7). Every
+    # other caller omits `data` and gets the original GET behaviour unchanged.
+    body = json.dumps(data).encode("utf-8") if data is not None else None
+    default_headers = {"Accept": "application/json", "User-Agent": "jobintel/0.1"}
+    if data is not None:
+        default_headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, data=body, headers=headers or default_headers, method="POST" if data is not None else "GET")
     with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def fetch_text(url: str, timeout_seconds: int = 20, headers: dict[str, str] | None = None) -> str:
+    request = urllib.request.Request(url, headers=headers or {"Accept": "text/html", "User-Agent": "jobintel/0.1"})
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        return response.read().decode("utf-8", errors="ignore")
+
+
+def extract_json_ld(html_text: str, schema_type: str) -> dict[str, Any] | None:
+    """Extract the first `<script type="application/ld+json">` block whose
+    `@type` matches `schema_type` (e.g. "JobPosting") -- real, standards-based
+    structured data sites publish for search engines, not a hidden/private API.
+    """
+    for match in re.finditer(r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>', html_text, re.DOTALL | re.IGNORECASE):
+        try:
+            # strict=False: tolerate literal control characters (e.g. raw
+            # newlines) inside string values -- invalid per strict JSON, but a
+            # common real-world pattern in server-rendered JSON-LD (confirmed
+            # live on prospects.ac.uk during the Phase 2.5 source audit) that
+            # browsers' JSON.parse tolerates. Rejecting it here would silently
+            # treat a real, valid-in-practice JobPosting block as "not found".
+            data = json.loads(match.group(1).strip(), strict=False)
+        except json.JSONDecodeError:
+            continue
+        candidates = data if isinstance(data, list) else [data]
+        for item in candidates:
+            if isinstance(item, dict) and item.get("@type") == schema_type:
+                return item
+    return None
+
+
+def json_ld_organisation_name(value: Any) -> str:
+    """`hiringOrganization` in a schema.org JobPosting can be a plain string or
+    an `Organization`/`Person` object -- handle both, same as Prospects'
+    detail-page parsing (connectors/prospects.py) needed live."""
+    if isinstance(value, dict):
+        return _text(value.get("name"))
+    return _text(value)
+
+
+def json_ld_location_text(value: Any) -> str:
+    """`jobLocation` in a schema.org JobPosting can be a plain string, a single
+    `Place`, or a list of several `Place`s for a multi-site role -- handle all
+    three. Returns "" (never a fabricated default) when nothing usable is
+    found; callers should fall back to their own default, if any."""
+    if isinstance(value, list) and value:
+        texts = [text for text in (_json_ld_place_text(place) for place in value) if text]
+        return "; ".join(dict.fromkeys(texts))
+    if isinstance(value, dict):
+        return _json_ld_place_text(value)
+    if isinstance(value, str):
+        return value.strip()
+    return ""
+
+
+def _json_ld_place_text(place: Any) -> str:
+    if not isinstance(place, dict):
+        return ""
+    address = place.get("address", place)
+    if isinstance(address, str):
+        return address.strip()
+    if isinstance(address, dict):
+        parts = [address.get("addressLocality"), address.get("addressRegion"), address.get("addressCountry")]
+        return ", ".join(str(part) for part in parts if part)
+    return ""
+
+
+def text_or_none(value: Any) -> str | None:
+    """Legacy closure-scope fallback helper: a non-empty identifier or None."""
+    text = _text(value)
+    return text or None
+
+
+def _text(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
 
 
 def strip_html(value: str | None) -> str:

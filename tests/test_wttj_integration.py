@@ -195,8 +195,8 @@ class WelcomeToTheJungleIntegrationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             store = LocalJobStore(tmp)
-            ingest_from_connectors([WelcomeToTheJungleManualConnector((discovery,))], ConnectorQuery(keywords=(), limit=5), store=store, mark_missing_inactive=False)
-            ingest_from_connectors([WelcomeToTheJungleManualConnector((enriched,))], ConnectorQuery(keywords=(), limit=5), store=store, mark_missing_inactive=False)
+            ingest_from_connectors([WelcomeToTheJungleManualConnector((discovery,))], ConnectorQuery(keywords=(), limit=5), store=store)
+            ingest_from_connectors([WelcomeToTheJungleManualConnector((enriched,))], ConnectorQuery(keywords=(), limit=5), store=store)
             jobs = store.read_jobs()
 
         self.assertEqual(len(jobs), 1)
@@ -400,10 +400,10 @@ class WelcomeToTheJungleIntegrationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             store = LocalJobStore(tmp)
-            ingest_from_connectors([WelcomeToTheJungleManualConnector((first_record,))], ConnectorQuery(keywords=(), limit=5), store=store, mark_missing_inactive=False)
+            ingest_from_connectors([WelcomeToTheJungleManualConnector((first_record,))], ConnectorQuery(keywords=(), limit=5), store=store)
             first_job = store.read_jobs()[0]
             before = _wttj_observations_by_source_id(store.read_jobs())
-            ingest_from_connectors([WelcomeToTheJungleManualConnector((second_record,))], ConnectorQuery(keywords=(), limit=5), store=store, mark_missing_inactive=False)
+            ingest_from_connectors([WelcomeToTheJungleManualConnector((second_record,))], ConnectorQuery(keywords=(), limit=5), store=store)
             jobs = store.read_jobs()
 
         self.assertEqual(len(jobs), 1)

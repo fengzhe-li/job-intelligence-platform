@@ -12,4 +12,16 @@ build/
 # Local runtime state: real candidate profile (name, CV text, contact details),
 # raw scraped job snapshots, and processed rankings. Never publish this.
 data/local/
+# Timestamped backups of data/local taken before data migrations -- same
+# personal data, same rule.
+data/backups/
 
+# Raw working notes behind the CV tailoring policy / regression fixture. They
+# describe real past applications; only the derived YAML assets are published.
+data/policies/sources/
+tests/fixtures/sources/
+# Curated Evidence Bank content for the candidate's own projects (including
+# private repositories) -- personal profile data, kept local-only.
+src/jobintel/evidence_enrichment.py
+tests/test_phase36_evidence_enrichment.py
+docs/PHASE_3_6_EVIDENCE_BANK_ENRICHMENT.md

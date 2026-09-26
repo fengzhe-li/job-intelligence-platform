@@ -45,7 +45,7 @@ Refresh behavior:
 - Adds newly observed jobs as `NEW`.
 - Marks same-content jobs as `UNCHANGED`.
 - Marks meaningful title/location/JD/apply URL changes as `CHANGED`.
-- Marks jobs missing from a successful source refresh as `DISAPPEARED`.
+- Marks jobs missing from a successful refresh of an organization as `DISAPPEARED` only when that organization's listing was fully observed (pagination exhausted, no keyword filter, not truncated). Manual WTTJ imports are never closed by an API refresh.
 - Marks previously disappeared jobs as `REAPPEARED` when they return.
 - Preserves `first_seen_at`, updates `last_seen_at`, and retains source observations.
 

@@ -75,13 +75,25 @@ class Phase3PersonalWorkflowTests(unittest.TestCase):
             self.assertEqual(stored.source_observations[0].last_seen_at, second_time)
             self.assertEqual(store.jobs_first_seen_since(self.now - timedelta(hours=1)), [])
 
-    def test_inactive_state_when_job_disappears(self) -> None:
+    def test_plain_write_never_infers_closure(self) -> None:
+        # Previously `write_jobs([])` marked EVERY stored job DISAPPEARED --
+        # absence with no completeness evidence must never close anything.
         with tempfile.TemporaryDirectory() as tmp:
             store = LocalJobStore(tmp)
             store.write_jobs([_job("job-1", "Backend Engineer", "Demo", self.now)])
             store.write_jobs([])
             stored = store.read_jobs()[0]
 
+            self.assertTrue(stored.source_observations[0].active)
+
+    def test_inactive_state_when_job_disappears_from_a_complete_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = LocalJobStore(tmp)
+            store.write_jobs([_job("job-1", "Backend Engineer", "Demo", self.now)])
+            closed = store.write_snapshot([], "greenhouse", frozenset({"demo"}), lambda raw_payload: "demo")
+            stored = store.read_jobs()[0]
+
+            self.assertEqual(closed, [("greenhouse", "job-1")])
             self.assertFalse(stored.source_observations[0].active)
             self.assertEqual(stored.source_observations[0].latest_observed_state, "DISAPPEARED")
 
