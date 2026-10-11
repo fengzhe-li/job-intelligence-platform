@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from jobintel.storage.locking import locked, sync_directory
+from jobintel.storage.submission_store import SubmissionStore
+from jobintel.models.submission import instant
 
 from jobintel.models.application import Application, ApplicationStatusEvent
 from jobintel.models.taxonomy import APPLICATION_POST_SUBMISSION_STATUSES, ApplicationStatus
@@ -27,6 +32,7 @@ class ApplicationStore:
         self.applications_path = self.applications_dir / "applications.json"
         self.status_history_path = self.applications_dir / "status_history.jsonl"
 
+    @locked
     def create_application(self, application: Application, note: str = "") -> Application:
         """Idempotent per canonical vacancy: if an application already exists
         for `application.job_id` (or with the same id), that existing record is
@@ -52,6 +58,7 @@ class ApplicationStore:
     def for_job(self, job_id: str) -> Application | None:
         return next((item for item in self.read_applications() if item.job_id == job_id), None)
 
+    @locked
     def update_status(self, application_id: str, status: ApplicationStatus, note: str = "", submitted_cv_version_id: str | None = None) -> Application:
         """Append-only lifecycle transition. A submitted application can never
         move back to a pre-submission status (discovered/shortlisted/
@@ -69,6 +76,7 @@ class ApplicationStore:
         if not matches:
             raise ValueError(f"No application with id {application_id}")
         existing = matches[0]
+        SubmissionStore(self.root).assert_application_idle(application_id)
         if existing.is_submitted and status in _PRE_SUBMISSION_STATUSES:
             raise ValueError(f"Application {application_id} was already submitted ({existing.status.value}); it cannot move back to {status.value}")
         submitting = status in APPLICATION_POST_SUBMISSION_STATUSES and not existing.is_submitted
@@ -79,6 +87,8 @@ class ApplicationStore:
                 raise ValueError(f"Application {application_id}: attach CV {submitted_cv_version_id} before recording it as submitted")
         if status == existing.status and not note:
             return existing
+        if not existing.is_submitted:
+            SubmissionStore(self.root).revoke_unqueued(application_id, "application_status_changed")
         now = datetime.now(timezone.utc)
         updated = replace(
             existing,
@@ -95,6 +105,7 @@ class ApplicationStore:
         )
         return updated
 
+    @locked
     def attach_cv(self, application_id: str, cv_version_id: str, selected_project_ids: list[str], evidence_ids_used: list[str]) -> Application:
         """Record which exact generated CV (and evidence) is intended for this
         application. Allowed freely BEFORE submission; after submission the CV
@@ -105,6 +116,7 @@ class ApplicationStore:
         if not matches:
             raise ValueError(f"No application with id {application_id}")
         existing = matches[0]
+        SubmissionStore(self.root).assert_application_idle(application_id)
         if existing.is_submitted:
             if cv_version_id == existing.cv_version_id and existing.submitted_cv_version_id == cv_version_id:
                 return existing
@@ -113,6 +125,8 @@ class ApplicationStore:
                 + (f"with system CV {existing.submitted_cv_version_id}" if existing.submitted_cv_version_id else "with no system CV attached")
                 + "; a CV cannot be attached or replaced after submission"
             )
+        if cv_version_id != existing.cv_version_id:
+            SubmissionStore(self.root).revoke_unqueued(application_id, "attached_cv_changed")
         now = datetime.now(timezone.utc)
         updated = replace(
             existing,
@@ -129,12 +143,54 @@ class ApplicationStore:
         self._append_status_event(ApplicationStatusEvent(application_id, existing.status, existing.status, now, f"CV attached: {cv_version_id}"))
         return updated
 
+    @locked
+    def _apply_verified_receipt(self, receipt_id: str) -> Application:
+        """Replay a durable verified receipt, never an executor-supplied dict.
+
+        Receipt -> durable status event -> current-state projection. A crash at
+        either boundary can be recovered using the stable receipt event ID.
+        """
+        receipt_event = next((e for e in SubmissionStore(self.root).receipts() if e["event_id"] == receipt_id), None)
+        if receipt_event is None or receipt_event["kind"] != "receipt_verified":
+            raise ValueError("A persisted, verified receipt is required")
+        receipt = receipt_event["data"]
+        applications = self.read_applications()
+        existing = next((a for a in applications if a.id == receipt["application_id"]), None)
+        if existing is None or existing.job_id != receipt["job_id"] or existing.cv_version_id != receipt["cv_artifact_id"] or existing.application_url != receipt["application_url"]:
+            raise ValueError("Verified receipt conflicts with application identity or CV")
+        if existing.is_submitted and existing.submission_receipt_id != receipt_id:
+            raise ValueError("Application was already submitted through another path")
+        if not existing.is_submitted and existing.status not in _PRE_SUBMISSION_STATUSES:
+            raise ValueError("Application is no longer eligible for submission reconciliation")
+        event_id = "submission:" + receipt_id
+        events = self.status_history_for(existing.id)
+        event = next((e for e in events if e.event_id == event_id), None)
+        if event and (event.receipt_id != receipt_id or event.submitted_cv_version_id != receipt["cv_artifact_id"] or not event.marks_submission):
+            raise ValueError("Conflicting submission history event")
+        if existing.is_submitted:
+            if event is None:
+                raise ValueError("Submitted receipt has no durable history event")
+            return existing  # Never regress an interview/offer on reconciliation.
+        submitted_at = instant(receipt["submitted_at"])
+        if event is None:
+            self._append_status_event(ApplicationStatusEvent(
+                existing.id, existing.status, ApplicationStatus.APPLIED, submitted_at,
+                "Confirmed submission receipt " + receipt_id, marks_submission=True,
+                submitted_cv_version_id=receipt["cv_artifact_id"], event_id=event_id, receipt_id=receipt_id))
+        updated = replace(existing, status=ApplicationStatus.APPLIED, applied_at=submitted_at,
+                          submitted_cv_version_id=receipt["cv_artifact_id"], submission_receipt_id=receipt_id,
+                          updated_at=datetime.now(timezone.utc))
+        self._write_applications([updated if a.id == existing.id else a for a in applications])
+        return updated
+
+    @locked
     def read_applications(self) -> list[Application]:
         if not self.applications_path.exists():
             return []
         payload = json.loads(self.applications_path.read_text(encoding="utf-8"))
         return [_application_from_dict(item) for item in payload]
 
+    @locked
     def status_history_for(self, application_id: str) -> list[ApplicationStatusEvent]:
         return [event for event in self._read_status_history() if event.application_id == application_id]
 
@@ -142,13 +198,20 @@ class ApplicationStore:
         self.applications_dir.mkdir(parents=True, exist_ok=True)
         payload = [_application_to_dict(application) for application in applications]
         tmp = self.applications_path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+        with tmp.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
         tmp.replace(self.applications_path)
+        sync_directory(self.applications_dir)
 
     def _append_status_event(self, event: ApplicationStatusEvent) -> None:
         self.applications_dir.mkdir(parents=True, exist_ok=True)
         with self.status_history_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(_event_to_dict(event), ensure_ascii=False, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        sync_directory(self.applications_dir)
 
     def _read_status_history(self) -> list[ApplicationStatusEvent]:
         if not self.status_history_path.exists():
@@ -186,6 +249,7 @@ def _application_from_dict(payload: dict[str, Any]) -> Application:
         evidence_ids_used=payload.get("evidence_ids_used", []),
         updated_at=_datetime(payload.get("updated_at")),
         submitted_cv_version_id=payload.get("submitted_cv_version_id"),
+        submission_receipt_id=payload.get("submission_receipt_id"),
     )
 
 
@@ -198,6 +262,8 @@ def _event_to_dict(event: ApplicationStatusEvent) -> dict[str, Any]:
         "note": event.note,
         "marks_submission": event.marks_submission,
         "submitted_cv_version_id": event.submitted_cv_version_id,
+        "event_id": event.event_id,
+        "receipt_id": event.receipt_id,
     }
 
 
@@ -210,6 +276,8 @@ def _event_from_dict(payload: dict[str, Any]) -> ApplicationStatusEvent:
         note=payload.get("note", ""),
         marks_submission=bool(payload.get("marks_submission", False)),
         submitted_cv_version_id=payload.get("submitted_cv_version_id"),
+        event_id=payload.get("event_id"),
+        receipt_id=payload.get("receipt_id"),
     )
 
 

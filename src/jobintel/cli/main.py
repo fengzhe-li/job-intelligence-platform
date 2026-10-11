@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -20,6 +21,7 @@ from jobintel.ats_discovery import (
     verify_registry,
 )
 from jobintel.analysis.job_enrichment import enrich_job
+from jobintel.application_lifecycle import ensure_application
 from jobintel.config import default_ranking_config, load_ranking_config
 from jobintel.dashboard.server import run_dashboard
 from jobintel.connectors.adzuna import ADZUNA_GRADUATE_KEYWORDS, AdzunaConnector
@@ -59,8 +61,9 @@ from jobintel.storage.company_discovery_store import CompanyDiscoveryStore
 from jobintel.storage.local_store import LocalJobStore
 from jobintel.storage.application_store import ApplicationStore
 from jobintel.storage.cv_artifact_store import CVArtifactStore
-from jobintel.matching.cv_generation import generate_and_save_cv
-from jobintel.models.application import Application
+from jobintel.analysis.eligibility import evaluate_job_eligibility
+from jobintel.matching.cv_generation import generate_and_save_cv, resolve_cv_pdf
+from jobintel.models.eligibility import EligibilityState
 from jobintel.models.taxonomy import ApplicationStatus, EvidenceSourceType
 from jobintel.validation import build_validation_report, write_validation_report
 
@@ -232,10 +235,8 @@ def main() -> None:
     github_sync_cmd.add_argument("--name", default="Personal Candidate")
     github_sync_cmd.add_argument("--graduation-year", type=int, default=2026, help="Candidate's actual degree completion year")
 
-    application_create = subparsers.add_parser("application-create", help="Create a new tracked application")
-    application_create.add_argument("--job-id", required=True)
-    application_create.add_argument("--company", required=True)
-    application_create.add_argument("--role-title", required=True)
+    application_create = subparsers.add_parser("application-create", help="Create (or return) the one tracked application for a canonical stored job")
+    application_create.add_argument("--job-id", required=True, help="Canonical job id in the local job store; company, title, URL, JD, sources and deadline all come from that Job")
     application_create.add_argument("--store", default="data/local")
 
     application_status = subparsers.add_parser("application-status", help="Transition an application's status, recording status history")
@@ -253,6 +254,11 @@ def main() -> None:
     application_inspect.add_argument("--id", required=True, dest="application_id")
     application_inspect.add_argument("--store", default="data/local")
 
+    application_attach_cv = subparsers.add_parser("application-attach-cv", help="Attach an existing, registered generated CV artifact to an application (never generates one)")
+    application_attach_cv.add_argument("--application-id", required=True)
+    application_attach_cv.add_argument("--cv-artifact-id", required=True, help="Exact id of a stored CV artifact; there is no 'latest' default")
+    application_attach_cv.add_argument("--store", default="data/local")
+
     cv_generate = subparsers.add_parser("cv-generate", help="Generate a job-specific, evidence-grounded one-page CV")
     cv_generate.add_argument("--job-id", required=True)
     cv_generate.add_argument("--application-id", help="Attach the generated CV to an existing tracked application")
@@ -264,6 +270,12 @@ def main() -> None:
     cv_show = subparsers.add_parser("cv-show", help="Show a previously generated CV artifact by id")
     cv_show.add_argument("--id", required=True, dest="artifact_id")
     cv_show.add_argument("--store", default="data/local")
+
+    cv_export = subparsers.add_parser("cv-export-review", help="Copy a registered CV artifact's exact PDF to Downloads for human review (convenience copy only; the artifact store stays authoritative)")
+    cv_export.add_argument("--cv-artifact-id", required=True)
+    cv_export.add_argument("--application-id", help="Name the copy <Name>_<Company>_<Role>_CV.pdf from this application")
+    cv_export.add_argument("--generic-name", action="store_true", help="Name the copy <Name>_CV.pdf")
+    cv_export.add_argument("--store", default="data/local")
 
     import_profile = subparsers.add_parser("profile-import", help="Register a candidate evidence source file")
     import_profile.add_argument("path")
@@ -359,7 +371,12 @@ def main() -> None:
     dashboard.add_argument("--config", default="config/personal_strategy.json")
     dashboard.add_argument("--registry", default="config/target_companies.json")
 
+    from jobintel.submission.cli import add_submission_commands, run_submission_command
+    add_submission_commands(subparsers)
     args = parser.parse_args()
+    if args.command.startswith("submission-"):
+        run_submission_command(args, parser)
+        return
     if args.command == "ingest":
         _ingest(args)
     elif args.command == "ingest-registry":
@@ -410,10 +427,14 @@ def main() -> None:
         _application_list(args)
     elif args.command == "application-inspect":
         _application_inspect(args)
+    elif args.command == "application-attach-cv":
+        _application_attach_cv(args)
     elif args.command == "cv-generate":
         _cv_generate(args)
     elif args.command == "cv-show":
         _cv_show(args)
+    elif args.command == "cv-export-review":
+        _cv_export_review(args)
     elif args.command == "profile-import":
         _profile_import(args)
     elif args.command == "profile-rebuild":
@@ -852,14 +873,22 @@ def _github_sync(args: argparse.Namespace) -> None:
 
 
 def _application_create(args: argparse.Namespace) -> None:
-    store = ApplicationStore(args.store)
-    application_id = f"{args.company}:{args.role_title}:{args.job_id}".casefold().replace(" ", "-")
-    application = Application(id=application_id, job_id=args.job_id, company=args.company, role_title=args.role_title)
-    stored = store.create_application(application)
-    if stored.id != application_id:
-        print(f"Job {args.job_id} already has application {stored.id} ({stored.status.value}) -- one application per vacancy; nothing created")
+    # Same canonical path as the dashboard: the persisted Job is the only
+    # source of the application's company/title/URL/JD/sources/deadline. An
+    # unknown job id fails closed -- never synthesize an application from CLI
+    # strings.
+    jobs = LocalJobStore(args.store)
+    job = next((item for item in jobs.read_jobs() if item.id == args.job_id), None)
+    if job is None:
+        raise SystemExit(f"No job with id {args.job_id} in {args.store}; refusing to create an application without its canonical Job")
+    store = ApplicationStore(jobs.root)
+    existing = store.for_job(job.id)
+    if existing is not None:
+        print(f"Job {job.id} already has application {existing.id} ({existing.status.value}) -- one application per vacancy; nothing created")
         return
-    print(f"Created application {application_id} with status {application.status.value}")
+    application = ensure_application(job, store)
+    print(f"Created application {application.id} with status {application.status.value}")
+    print(f"Application URL: {application.application_url or '(none on canonical job)'}")
 
 
 def _application_status(args: argparse.Namespace) -> None:
@@ -882,6 +911,38 @@ def _application_list(args: argparse.Namespace) -> None:
     for application in applications:
         print(f"{application.id} | {application.company} | {application.role_title} | {application.status.value}")
     print(f"Total: {len(applications)}")
+
+
+def _application_attach_cv(args: argparse.Namespace) -> None:
+    # Only a registered artifact whose PDF sits in this store and still matches
+    # its recorded hash can be attached; the mutation (incl. revoking approvals
+    # bound to a previously attached CV) is ApplicationStore.attach_cv's.
+    applications = ApplicationStore(args.store)
+    application = next((item for item in applications.read_applications() if item.id == args.application_id), None)
+    if application is None:
+        raise SystemExit(f"No application with id {args.application_id}")
+    resolved = resolve_cv_pdf(CVArtifactStore(args.store), args.cv_artifact_id)
+    if resolved is None:
+        raise SystemExit(f"No registered CV artifact {args.cv_artifact_id} with its PDF in {args.store}")
+    pdf_path, artifact = resolved
+    if not artifact.pdf_sha256 or hashlib.sha256(pdf_path.read_bytes()).hexdigest() != artifact.pdf_sha256:
+        raise SystemExit(f"CV artifact {artifact.id} PDF does not match its recorded SHA-256; refusing to attach")
+    if artifact.job_id != application.job_id:
+        raise SystemExit(f"CV artifact {artifact.id} was generated for job {artifact.job_id}, not {application.job_id}")
+    if artifact.application_id not in (None, application.id):
+        raise SystemExit(f"CV artifact {artifact.id} was generated for application {artifact.application_id}")
+    if application.cv_version_id == artifact.id:
+        print(f"Application {application.id} already has CV {artifact.id} attached; nothing changed")
+        _print_review_export(args.store, artifact.id, application)
+        return
+    try:
+        updated = applications.attach_cv(application.id, artifact.id, artifact.selected_project_ids, artifact.evidence_ids_used)
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+    print(f"Attached CV {updated.cv_version_id} (PDF SHA-256 {artifact.pdf_sha256}) to application {updated.id}")
+    if application.cv_version_id:
+        print(f"Replaced previously attached CV {application.cv_version_id}; approvals bound to it were revoked")
+    _print_review_export(args.store, artifact.id, updated)
 
 
 def _application_inspect(args: argparse.Namespace) -> None:
@@ -920,11 +981,19 @@ def _cv_generate(args: argparse.Namespace) -> None:
     if candidate is None:
         raise SystemExit(f"No candidate profile found in {args.store} -- run profile-rebuild first")
 
+    eligibility = evaluate_job_eligibility(job, candidate)
+    if eligibility.state == EligibilityState.HARD_INELIGIBLE:
+        print(f"SKIPPED (HARD_INELIGIBLE): {eligibility.reason}")
+        print(f"  Requirement: {eligibility.extracted_requirement} ({eligibility.source_text})")
+        print(f"  Candidate fact: {eligibility.candidate_fact}")
+        return
+
     artifact = generate_and_save_cv(candidate, job, CVArtifactStore(args.store), max_projects=args.max_projects, application_id=args.application_id, store_root=args.store)
 
+    attached = None
     if args.application_id:
         try:
-            ApplicationStore(args.store).attach_cv(args.application_id, artifact.id, artifact.selected_project_ids, artifact.evidence_ids_used)
+            attached = ApplicationStore(args.store).attach_cv(args.application_id, artifact.id, artifact.selected_project_ids, artifact.evidence_ids_used)
         except ValueError as exc:
             print(f"NOT attached: {exc}")
 
@@ -939,9 +1008,49 @@ def _cv_generate(args: argparse.Namespace) -> None:
         print(f"  - {reason}")
     if args.application_id:
         print(f"Attached to application: {args.application_id}")
+    if attached is not None:
+        _print_review_export(args.store, artifact.id, attached)
     if args.print_cv:
         print("\n--- CV TEXT ---")
         print(artifact.cv_text)
+
+
+def _review_export(store: str, artifact_id: str, application=None, generic: bool = False):
+    from jobintel.matching.cv_review_export import export_cv_for_review, review_filename
+    candidate = load_candidate_profile(store)
+    if candidate is None:
+        raise ValueError("no candidate profile to name the copy")
+    company, role = (None, None) if generic or application is None else (application.company, application.role_title)
+    return export_cv_for_review(store, artifact_id, review_filename(candidate.name, company, role),
+                                application_id=application.id if application is not None else None)
+
+
+def _print_review_export(store: str, artifact_id: str, application) -> None:
+    """Best-effort convenience copy after a CV is attached; never affects the attachment."""
+    try:
+        result = _review_export(store, artifact_id, application)
+    except (ValueError, OSError) as exc:
+        print(f"Review copy NOT exported (the stored artifact is unaffected): {exc}")
+        return
+    print(f"Review copy ({result.action}, SHA-256 verified): {result.export_path}")
+
+
+def _cv_export_review(args: argparse.Namespace) -> None:
+    application = None
+    if args.application_id:
+        application = next((a for a in ApplicationStore(args.store).read_applications() if a.id == args.application_id), None)
+        if application is None:
+            raise SystemExit(f"No application with id {args.application_id}")
+    try:
+        result = _review_export(args.store, args.cv_artifact_id, application, generic=args.generic_name)
+    except (ValueError, OSError) as exc:
+        raise SystemExit(f"Not exported: {exc}")
+    print(f"Authoritative CV artifact: {result.artifact_id}")
+    print(f"Authoritative PDF: {result.source_path}")
+    print(f"Review copy ({result.action}): {result.export_path}")
+    print(f"SHA-256 artifact: {result.source_sha256}")
+    print(f"SHA-256 copy:     {result.export_sha256}")
+    print(f"Match: {'yes' if result.matches else 'NO'}")
 
 
 def _cv_show(args: argparse.Namespace) -> None:

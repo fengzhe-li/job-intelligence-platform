@@ -33,6 +33,8 @@ class Application:
     # in retroactively (ApplicationStore.attach_cv refuses after submission).
     submitted_cv_version_id: str | None = None
 
+    submission_receipt_id: str | None = None
+
     @property
     def is_submitted(self) -> bool:
         return self.applied_at is not None or self.status in APPLICATION_POST_SUBMISSION_STATUSES
@@ -50,3 +52,6 @@ class ApplicationStatusEvent:
     # or, with submitted_cv_version_id None, that none was attached.
     marks_submission: bool = False
     submitted_cv_version_id: str | None = None
+
+    event_id: str | None = None
+    receipt_id: str | None = None

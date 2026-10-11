@@ -44,11 +44,12 @@ Terminal states: `rejected`, `withdrawn`, `expired`. Transitions aren't restrict
 ## CLI
 
 ```bash
-PYTHONPATH=src python3 -m jobintel.cli.main application-create --job-id job-42 --company "Example Co" --role-title "Graduate Software Engineer"
-PYTHONPATH=src python3 -m jobintel.cli.main application-status --id example-co:graduate-software-engineer:job-42 --status shortlisted --note "Strong fit"
+PYTHONPATH=src python3 -m jobintel.cli.main application-create --job-id job-42   # loads the stored canonical Job; unknown ids fail closed
+PYTHONPATH=src python3 -m jobintel.cli.main application-status --id app:job-42 --status shortlisted --note "Strong fit"
 PYTHONPATH=src python3 -m jobintel.cli.main application-list --status shortlisted
-PYTHONPATH=src python3 -m jobintel.cli.main application-inspect --id example-co:graduate-software-engineer:job-42
-PYTHONPATH=src python3 -m jobintel.cli.main cv-generate --job-id job-42 --application-id example-co:graduate-software-engineer:job-42
+PYTHONPATH=src python3 -m jobintel.cli.main application-inspect --id app:job-42
+PYTHONPATH=src python3 -m jobintel.cli.main cv-generate --job-id job-42 --application-id app:job-42
+PYTHONPATH=src python3 -m jobintel.cli.main application-attach-cv --application-id app:job-42 --cv-artifact-id cv-0123456789ab   # existing, registered, hash-verified CV only
 ```
 
 ## What's Implemented vs. Not Yet

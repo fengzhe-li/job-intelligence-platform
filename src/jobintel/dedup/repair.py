@@ -161,6 +161,12 @@ def plan_repair(
     return result, cases
 
 
+def backup_store(store_root: Path | str, target: Path | str) -> None:
+    """Copy the application store, never its ephemeral local-browser runtime (live profiles)."""
+    from jobintel.storage.ephemeral import ignore_ephemeral
+    shutil.copytree(store_root, target, ignore=ignore_ephemeral)
+
+
 def repair_historical_merges(
     store_root: Path | str,
     backups_dir: Path | str,
@@ -186,7 +192,7 @@ def repair_historical_merges(
     if not dry_run and any(case.action == "split" for case in cases):
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         target = Path(backups_dir) / f"local-before-dedup-repair-{stamp}"
-        shutil.copytree(store.root, target)
+        backup_store(store.root, target)
         backup_path = str(target)
         store.replace_jobs(repaired)
     if not dry_run and cases:

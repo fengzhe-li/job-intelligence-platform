@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from jobintel.models.candidate import CandidateProfile, Project
@@ -17,9 +18,64 @@ class ProjectMatch:
     matched_requirements: list[str]
     missing_requirements: list[str]
     explanation: str
+    # "exact_requirement": grounded evidence for an extracted JD skill requirement.
+    # "transferable": selected by the fallback below -- matches NO JD skill
+    # requirement; relevant only via a software-engineering dimension the JD
+    # text names and the project's own evidence supports.
+    selection_basis: str = "exact_requirement"
+    transferable_dimensions: tuple[str, ...] = ()
 
 
 ROLE_RELEVANCE_WEIGHT = 3.0
+
+# --- Transferable-relevance fallback ---
+#
+# When exact required-skill matching yields too few projects (e.g. the JD's only
+# extracted requirement is a language the candidate has no evidence for), the
+# selector may add a small number of projects that are relevant through a
+# software-engineering dimension the JD explicitly asks about (testing, CI,
+# APIs, databases, latency...) AND that the project's own linked capability
+# evidence supports. This never touches matched/missing requirements: a
+# transferable project matches no JD requirement, and every unsupported
+# requirement stays unsupported.
+#
+# dimension -> (JD-text signal pattern, capability names that evidence it)
+TRANSFERABLE_DIMENSIONS: dict[str, tuple[str, frozenset[str]]] = {
+    "testing": (
+        r"\btests?\b|\btesting\b|\btdd\b|\bbdd\b|test-driven|unit[- ]test",
+        frozenset({"pytest", "junit", "jest", "unittest", "selenium", "cypress", "playwright"}),
+    ),
+    "ci_cd": (
+        r"continuous (?:integration|delivery|deployment)|\bci/cd\b|\bci\b|github actions|jenkins",
+        frozenset({"ci/cd", "github actions", "jenkins", "gitlab ci"}),
+    ),
+    "containers_linux": (
+        r"\bdocker\b|\bcontaineri[sz]|\bcontainers?\b|kubernetes|\blinux\b|\bunix\b",
+        frozenset({"docker", "kubernetes", "linux", "bash"}),
+    ),
+    "apis_services": (
+        r"\bapis?\b|\brest(?:ful)?\b|microservices?|back[- ]?end|web services?",
+        frozenset({"rest", "fastapi", "flask", "django", "spring", "express", "grpc", "graphql"}),
+    ),
+    "databases": (
+        r"\bdatabases?\b|\bsql\b|\bpersistence\b|data model",
+        frozenset({"sql", "postgresql", "mysql", "sqlite", "dynamodb", "mongodb", "redis"}),
+    ),
+    "distributed_networked": (
+        r"\bdistributed\b|\bnetwork(?:ed|ing)?\b|\bmessaging\b|message queue|event[- ]driven|\btcp\b",
+        frozenset({"tcp/ip", "mqtt", "kafka", "rabbitmq", "grpc", "websocket"}),
+    ),
+    "systems_performance": (
+        r"\blatency\b|\bthroughput\b|low[- ]level|systems programming|operating systems?",
+        frozenset({"c", "c++", "rust", "linux", "criu"}),
+    ),
+}
+# Fallback only kicks in below this many exact-match projects ...
+MIN_EXACT_MATCH_PROJECTS = 2
+# ... and fills to at most this many projects in total (never just to fill space).
+TRANSFERABLE_FALLBACK_TARGET = 3
+# A project needs at least one full-strength JD-named dimension to qualify.
+MIN_TRANSFERABLE_SCORE = 1.0
 
 
 def score_projects_for_job(job: Job, profile: CandidateProfile) -> list[ProjectMatch]:
@@ -92,6 +148,92 @@ def score_projects_for_job(job: Job, profile: CandidateProfile) -> list[ProjectM
 
 def select_top_projects(matches: list[ProjectMatch], max_projects: int = 4) -> list[ProjectMatch]:
     return [match for match in matches if match.score > 0][:max_projects]
+
+
+def score_transferable_projects(
+    job: Job,
+    profile: CandidateProfile,
+    exclude_ids: set[str] | None = None,
+) -> list[ProjectMatch]:
+    """Score projects on transferable software-engineering relevance only.
+
+    A dimension counts only if the JD text names it AND the project has its own
+    linked (strong/partial) capability evidence for it. Returned matches carry
+    no matched requirements -- every required JD skill stays missing."""
+    exclude_ids = exclude_ids or set()
+    jd_text = f"{job.title}\n{job.description or ''}".casefold()
+    jd_dimensions = {
+        name: capabilities
+        for name, (pattern, capabilities) in TRANSFERABLE_DIMENSIONS.items()
+        if re.search(pattern, jd_text)
+    }
+    if not jd_dimensions:
+        return []
+
+    tier_weight = {"strong": 1.0, "partial": 0.5, "missing": 0.0}
+    required = sorted(item.name for item in job.skill_requirements if item.required)
+    primary_track = job.role_track_profile.primary()
+
+    matches: list[ProjectMatch] = []
+    for project in profile.projects:
+        if project.id in exclude_ids:
+            continue
+        project_capabilities = {
+            capability.name.casefold(): capability
+            for capability in profile.capabilities.values()
+            if any(evidence.project_id == project.id for evidence in capability.evidence)
+        }
+        score = 0.0
+        supported: list[str] = []
+        for dimension, capability_names in jd_dimensions.items():
+            evidenced = sorted(
+                (project_capabilities[name] for name in capability_names if name in project_capabilities),
+                key=lambda capability: -tier_weight[capability.evidence_tier],
+            )
+            if not evidenced or tier_weight[evidenced[0].evidence_tier] <= 0:
+                continue
+            score += tier_weight[evidenced[0].evidence_tier]
+            supported.append(f"{dimension} ({', '.join(c.name for c in evidenced if tier_weight[c.evidence_tier] > 0)})")
+        if score < MIN_TRANSFERABLE_SCORE:
+            continue
+        if primary_track is not None:
+            score += project.role_relevance.get(primary_track.track, 0.0) * ROLE_RELEVANCE_WEIGHT
+        dimensions = tuple(item.split(" (", 1)[0] for item in supported)
+        unsupported = f" -- no grounded evidence for required: {', '.join(required)}" if required else ""
+        matches.append(
+            ProjectMatch(
+                project=project,
+                score=round(score, 3),
+                matched_requirements=[],
+                missing_requirements=[name.casefold() for name in required],
+                explanation=f"Transferable relevance (JD-named dimensions with project evidence): {'; '.join(supported)}{unsupported}",
+                selection_basis="transferable",
+                transferable_dimensions=dimensions,
+            )
+        )
+    # Stable sort: ties keep the profile's project order (deterministic).
+    return sorted(matches, key=lambda item: (-item.score, -len(item.transferable_dimensions)))
+
+
+def _with_transferable_fallback(
+    job: Job,
+    profile: CandidateProfile,
+    selected: list[ProjectMatch],
+    explanations: dict[str, str],
+    max_projects: int,
+) -> tuple[list[ProjectMatch], dict[str, str]]:
+    """Exact-requirement matches always come first; transferable projects are
+    only appended when exact matching produced too few."""
+    if len(selected) >= MIN_EXACT_MATCH_PROJECTS:
+        return selected, explanations
+    room = min(max_projects, TRANSFERABLE_FALLBACK_TARGET) - len(selected)
+    if room <= 0:
+        return selected, explanations
+    fallback = score_transferable_projects(job, profile, exclude_ids={match.project.id for match in selected})[:room]
+    explanations = dict(explanations)
+    for match in fallback:
+        explanations[match.project.id] = match.explanation
+    return selected + fallback, explanations
 
 
 def score_projects_for_job_hybrid(
@@ -224,7 +366,8 @@ def select_top_projects_hybrid(
     # 1. Relevance is strictly primary: only consider projects with positive evidence score
     relevant_matches = [m for m in initial_matches if m.score > 0]
     if not relevant_matches:
-        return [], {}, mode
+        selected, explanations = _with_transferable_fallback(job, profile, [], {}, max_projects)
+        return selected, explanations, mode
 
     required_names = {item.name.casefold() for item in job.skill_requirements if item.required}
     primary_track = job.role_track_profile.primary()
@@ -288,6 +431,7 @@ def select_top_projects_hybrid(
             if any(ev.project_id == best_candidate.project.id for ev in cap.evidence):
                 covered_skills.add(cap.name.casefold())
 
+    selected, explanations = _with_transferable_fallback(job, profile, selected, explanations, max_projects)
     return selected, explanations, mode
 
 

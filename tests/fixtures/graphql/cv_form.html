@@ -1,0 +1,40 @@
+<!doctype html><html><head><title>Graduate Engineer — ExampleCo</title>
+<script>
+// Synthetic hosted-ATS form: per-field autosave mutation, and a resume file input whose change
+// starts the site's own upload flow (an upload-handle mutation). ?mode=next splits the form over
+// two steps with a type=button Next; ?mode=noupload selects without any upload request.
+const mode = new URLSearchParams(location.search).get('mode') || '';
+const post = (operationName, query, variables) => fetch('/api/non-user-graphql', {method: 'POST',
+  headers: {'content-type': 'application/json'}, body: JSON.stringify({operationName, query, variables})});
+const SET = 'mutation ApiSetFormValue($path: String!, $value: String) { setFormValue(path: $path, value: $value) { ok } }';
+addEventListener('DOMContentLoaded', () => {
+  for (const el of document.querySelectorAll('input:not([type=file]), select'))
+    el.addEventListener('change', () => post('ApiSetFormValue', SET, {path: el.id, value: el.value}));
+  document.getElementById('cv').addEventListener('change', () => {
+    if (mode !== 'noupload') post('ApiCreateFileUploadHandle',
+      'mutation ApiCreateFileUploadHandle($name: String!) { createFileUploadHandle(name: $name) { url } }',
+      {name: 'cv.pdf'});
+  });
+  if (mode === 'next') {
+    document.getElementById('step2').hidden = true;
+    const next = document.createElement('button');
+    next.type = 'button'; next.textContent = 'Next';
+    next.addEventListener('click', () => { document.getElementById('step1').hidden = true;
+                                           document.getElementById('step2').hidden = false; next.remove(); });
+    document.getElementById('step1').append(next);
+  }
+});
+</script></head><body><h1>ExampleCo — Graduate Engineer</h1>
+<form action="/submit" method="post">
+  <div id="step1">
+    <label for="nm">Name *</label><input id="nm" required>
+    <label for="em">Email *</label><input id="em" type="email" required>
+    <label for="cv">Resume *</label><input id="cv" type="file" required>
+  </div>
+  <div id="step2">
+    <label for="ph">Phone *</label><input id="ph" type="tel" required>
+    <label for="co">Country *</label>
+    <select id="co" required><option value="">Select…</option><option>France</option><option>United Kingdom</option></select>
+    <button type="submit">Submit Application</button>
+  </div>
+</form></body></html>

@@ -112,6 +112,26 @@ class Education:
 
 
 @dataclass(frozen=True)
+class ExperienceEvidence:
+    """One grounded statement about an internship/job, usable as a CV bullet.
+
+    `sources` / `source_locations` (parallel) say exactly where it is
+    grounded -- a candidate-authored CV, the authoritative answer bank, or a
+    dated direct confirmation by the candidate -- so each kind of provenance
+    stays distinguishable."""
+
+    id: str
+    text: str
+    sources: tuple[EvidenceSource, ...]
+    source_locations: tuple[str, ...]
+    capability_names: tuple[str, ...] = ()
+    forbidden_extrapolations: tuple[str, ...] = ()
+    # For a CV bullet variant: the ids of the long-form master units
+    # (`Experience.master`) whose facts it restates. Empty for a standalone statement.
+    grounded_in: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class Experience:
     organisation: str
     title: str
@@ -119,6 +139,16 @@ class Experience:
     start_date: date | None = None
     end_date: date | None = None
     evidence_source: EvidenceSource | None = None
+    id: str = ""
+    # CV bullet candidates. With a master, a pool of concise variants -- more than
+    # any one CV shows -- each grounded in one or more master units; the generator
+    # picks a JD-relevant, non-overlapping subset per CV.
+    evidence: tuple[ExperienceEvidence, ...] = ()
+    # Reviewed-but-not-promoted material and unresolved source discrepancies.
+    provenance_notes: tuple[str, ...] = ()
+    # The authoritative long-form experience master, kept verbatim (one unit per
+    # fact-source bullet). It is the fact source, never a fixed bullet list.
+    master: tuple[ExperienceEvidence, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -148,6 +178,37 @@ class CandidateProfile:
     location: str | None = None
     linkedin_url: str | None = None
     github_url: str | None = None
+    # Grounded candidate eligibility facts (nationality, clearance, sponsorship)
+    nationality: str | None = None
+    citizenship: str | None = None
+    security_clearance: str | None = None
+    security_clearance_eligible: bool | None = None
+    requires_visa_sponsorship: bool | None = None
+    # Authoritative UK work authorization facts
+    current_uk_visa_status: str | None = None
+    uk_visa_expiry: str | None = None
+    has_uk_right_to_work: bool | None = None
+    student_visa_conditions: bool | None = None
+    graduate_route_intended: bool | None = None
+    requires_skilled_worker_sponsorship_future: bool | None = None
+    has_permanent_right_to_work: bool | None = None
+
+    # No built-in defaults: a fact the profile does not state is unknown (None), never assumed.
+    @property
+    def authoritative_uk_visa_status(self) -> str | None:
+        return self.current_uk_visa_status
+
+    @property
+    def authoritative_uk_visa_expiry(self) -> str | None:
+        return self.uk_visa_expiry
+
+    @property
+    def authoritative_has_uk_right_to_work(self) -> bool | None:
+        return self.has_uk_right_to_work
+
+    @property
+    def authoritative_requires_future_sponsorship(self) -> bool | None:
+        return self.requires_skilled_worker_sponsorship_future
 
     def upsert_capability(self, capability: Capability) -> None:
         key = capability.name.casefold()

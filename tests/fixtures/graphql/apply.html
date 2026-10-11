@@ -1,0 +1,23 @@
+<!doctype html><html><head><title>Graduate Engineer — ExampleCo</title>
+<script>
+// Synthetic SPA-style page: one GraphQL POST during page load, like a job board fetching its
+// posting/form data. ?gql=<case> picks the body; variables carry a sentinel that must never persist.
+const VARS = {postingId: 'p-1', email: 'SECRET-VARIABLE-SENTINEL', token: 'SECRET-TOKEN-SENTINEL'};
+const BODIES = {
+  read: {operationName: 'ApiJobPosting', query: 'query ApiJobPosting($postingId: String!) { jobPosting(id: $postingId) { title } }', variables: VARS},
+  other_read: {operationName: 'ApiOtherQuery', query: 'query ApiOtherQuery { other { id } }', variables: VARS},
+  mutation: {operationName: 'ApiSetDraft', query: 'mutation ApiSetDraft($email: String) { setDraft(email: $email) { ok } }', variables: VARS},
+  mutation_same_name: {operationName: 'ApiJobPosting', query: 'mutation ApiJobPosting($email: String) { setDraft(email: $email) { ok } }', variables: VARS},
+  no_name: {query: 'query ApiJobPosting { jobPosting { title } }', variables: VARS},
+  mixed: {operationName: 'ApiJobPosting', query: 'query ApiJobPosting { jobPosting { title } } mutation ApiSetDraft { setDraft { ok } }', variables: VARS},
+};
+const gql = new URLSearchParams(location.search).get('gql');
+if (gql === 'malformed') fetch('/api/non-user-graphql', {method: 'POST', headers: {'content-type': 'application/json'}, body: '{"operationName": "ApiJobPosting", SECRET-BODY-SENTINEL'});
+else if (gql === 'batch') fetch('/api/non-user-graphql', {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify([BODIES.read])});
+else if (gql) fetch('/api/non-user-graphql', {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(BODIES[gql])});
+</script></head><body><h1>ExampleCo — Graduate Engineer</h1>
+<form action="/submit" method="post">
+  <label for="fn">First name *</label><input id="fn" required>
+  <label for="em">Email *</label><input id="em" type="email" required>
+  <button type="submit">Submit application</button>
+</form></body></html>

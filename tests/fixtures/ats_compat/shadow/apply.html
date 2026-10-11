@@ -1,0 +1,11 @@
+<!doctype html><html><head><title>Graduate Engineer — ExampleCo</title></head><body><h1>ExampleCo — Graduate Engineer</h1>
+<application-form></application-form>
+<script>
+customElements.define('application-form', class extends HTMLElement {
+  connectedCallback() {
+    const root = this.attachShadow({mode: 'open'});
+    root.innerHTML = '<form action="/submit" method="post"><label for="fn">First name *</label><input id="fn" required>' +
+      '<label for="em">Email *</label><input id="em" type="email" required><button type="submit">Submit application</button></form>';
+  }
+});
+</script></body></html>

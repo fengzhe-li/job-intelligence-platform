@@ -1,0 +1,14 @@
+<!doctype html><html><head><title>Graduate Engineer — ExampleCo</title></head><body><h1>ExampleCo — Graduate Engineer</h1>
+<form action="/submit" method="post">
+  <label for="fn">First name *</label><input id="fn" required>
+  <label><input type="checkbox" id="dl"> Do you have a driving licence</label>
+  <div id="more" style="display:none">
+    <label for="dlc">Driving licence country *</label><select id="dlc"><option value=""></option><option>Sampleland</option></select>
+    <label for="num">Licence number *</label><input id="num">
+  </div>
+  <button type="submit">Submit application</button>
+</form>
+<script>document.getElementById('dl').addEventListener('change', (e) => {
+  const on = e.target.checked; document.getElementById('more').style.display = on ? 'block' : 'none';
+  document.getElementById('dlc').required = on; document.getElementById('num').required = on; });</script>
+</body></html>

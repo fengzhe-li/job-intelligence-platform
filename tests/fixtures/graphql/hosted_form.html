@@ -1,0 +1,136 @@
+<!doctype html><html><head><title>Graduate Engineer — ExampleCo</title></head><body>
+<h1>ExampleCo — Graduate Engineer</h1>
+<!-- Synthetic hosted-ATS application form (offline). Question titles sit in each field's container
+     and are NOT tied to their input (no for=, no aria-labelledby), like a hosted job board:
+     a location autocomplete (suggestion READ + form-value write), Yes/No radio groups, LinkedIn,
+     five open questions and a resume upload whose change runs the site's own upload flow:
+     an upload-handle mutation, a multipart POST to a storage host, then a form-value write, and
+     finally shows the uploaded file name. Query:
+       mode=ok | unknown_op | unknown_storage | submit_after_upload | handle_at_load | no_show | autofill
+            | show_first (name shown on selection, before any upload) | visible_only (name shown, no upload)
+            | storage_put | storage_at_load | storage_fail (storage answers 403)
+            | assoc_at_load (file association at page load) | assoc_wrong_handle (associates another file)
+            | assoc_fail (the association answers with GraphQL errors)
+       The upload flow: ApiCreateFileUploadHandle -> storage POST (form field "key" = the handle) ->
+       ApiSetFormValueToFile naming the handle -> the page shows the file name.
+       storage=test|s3 (s3 = the observed hosted-ATS S3 host)
+       spons=plain|future|ambiguous   rtw=perm|current|ambiguous   loc=ok|ambiguous
+       links=1 (GitHub Profile, Portfolio / Website and an ambiguous "Profile URL" field)
+       layout=plain|ashby (sponsorship radio inside a section whose instructions precede the field's
+       own title; the title's for= points at the first option)|aria (rtw group named by aria-labelledby) -->
+<form action="/submit" method="post">
+  <div class="field-entry"><label for="nm">Name *</label><input id="nm" required></div>
+  <div class="field-entry"><label for="em">Email *</label><input id="em" type="email" required></div>
+  <div class="field-entry" id="autofill-entry" hidden><label class="question-title">Autofill from resume</label>
+    <div><input type="file" id="autofill"></div></div>
+  <div class="field-entry"><label class="question-title">Resume</label>
+    <div><input type="file" id="resume" required><span id="resume-name"></span></div></div>
+  <div class="field-entry"><label for="li">LinkedIn Profile</label><input id="li" type="url"></div>
+  <div id="links" hidden>
+    <div class="field-entry"><label for="gh">GitHub Profile</label><input id="gh" type="url"></div>
+    <div class="field-entry"><label for="web">Portfolio / Website</label><input id="web" type="url"></div>
+    <div class="field-entry"><label for="amb">Profile URL</label><input id="amb" type="url"></div>
+  </div>
+  <div class="field-entry"><label class="question-title">Location</label>
+    <div><input id="loc" role="combobox" aria-controls="loc-list" aria-expanded="false" autocomplete="off">
+      <ul id="loc-list" role="listbox" hidden></ul></div></div>
+  <div class="field-entry" id="spons-entry"><label class="question-title" id="spons-title"></label>
+    <div><label><input type="radio" name="spons" value="Yes"> Yes</label>
+         <label><input type="radio" name="spons" value="No"> No</label></div></div>
+  <div class="section" id="ashby-section" hidden>
+    <label class="section-description">Please answer each question in a few sentences. AI-generated answers will automatically invalidate the application.</label>
+    <div class="field-entry"><label class="question-title" id="ash-title" for="ash-yes"></label>
+      <div><label><input type="radio" name="spons-a" id="ash-yes" value="Yes"> Yes</label>
+           <label><input type="radio" name="spons-a" id="ash-no" value="No"> No</label></div></div></div>
+  <div class="field-entry" id="rtw-entry"><label class="question-title" id="rtw-title"></label>
+    <div><label><input type="radio" name="rtw" value="Yes"> Yes</label>
+         <label><input type="radio" name="rtw" value="No"> No</label></div></div>
+  <div class="field-entry" id="aria-entry" hidden><p>Please read carefully before answering.</p><span id="aria-title"></span>
+    <div role="radiogroup" aria-labelledby="aria-title">
+      <label><input type="radio" name="rtw-a" value="Yes"> Yes</label>
+      <label><input type="radio" name="rtw-a" value="No"> No</label></div></div>
+  <div class="field-entry"><label for="q1">1. What aspects of software development technology or process are you most interested in and why? *</label><textarea id="q1" required></textarea></div>
+  <div class="field-entry"><label for="q2">2. What specific technology do you dislike the most and why? *</label><textarea id="q2" required></textarea></div>
+  <div class="field-entry"><label for="q3">3. What does good software look like in your opinion? *</label><textarea id="q3" required></textarea></div>
+  <div class="field-entry"><label for="q4">4. Please describe an interesting technical challenge you have faced in your work and how you overcame it. *</label><textarea id="q4" required></textarea></div>
+  <div class="field-entry"><label for="q5">5. What are you looking for in your next role? *</label><textarea id="q5" required></textarea></div>
+  <button type="submit">Submit Application</button>
+</form>
+<script>
+const q = new URLSearchParams(location.search), mode = q.get('mode') || 'ok';
+const SPONS = {plain: 'Will you now or in the future require visa sponsorship to work in the UK?',
+               future: 'Do you require visa sponsorship now or in the future?',
+               ambiguous: 'What is your visa sponsorship situation?'};
+const RTW = {perm: 'Do you have the permanent or unrestricted right to work in the UK?',
+             current: 'Do you currently have the right to work in the UK?',
+             ambiguous: 'Do you have the right to work in the UK?'};
+document.getElementById('spons-title').textContent = SPONS[q.get('spons') || 'plain'];
+document.getElementById('rtw-title').textContent = RTW[q.get('rtw') || 'perm'];
+const layout = q.get('layout') || 'plain';
+if (q.get('links') === '1') document.getElementById('links').hidden = false;
+if (layout === 'ashby') {
+  document.getElementById('spons-entry').remove();
+  document.getElementById('ashby-section').hidden = false;
+  document.getElementById('ash-title').textContent = SPONS[q.get('spons') || 'plain'];
+}
+if (layout === 'aria') {
+  document.getElementById('rtw-entry').remove();
+  document.getElementById('aria-entry').hidden = false;
+  document.getElementById('aria-title').textContent = RTW[q.get('rtw') || 'perm'];
+}
+const STORAGE_URL = q.get('storage') === 's3'
+  ? 'https://ashbyhq-infra-prd-main-app-uploaded-files-us-east-1.s3.us-east-1.amazonaws.com/'
+  : 'https://uploads.storage.test/bucket';
+if (mode === 'autofill') document.getElementById('autofill-entry').hidden = false;
+const gql = (operationName, query, variables) => fetch('/api/non-user-graphql', {method: 'POST',
+  headers: {'content-type': 'application/json'}, body: JSON.stringify({operationName, query, variables})});
+const SET = 'mutation ApiSetFormValue($path: String!, $value: String) { setFormValue(path: $path, value: $value) { ok } }';
+const HANDLE = 'mutation ApiCreateFileUploadHandle($name: String!) { createFileUploadHandle(name: $name) { url handle } }';
+const TO_FILE = 'mutation ApiSetFormValueToFile($path: String!, $handle: String!) { setFormValueToFile(path: $path, handle: $handle) { ok } }';
+const save = (path, value) => gql('ApiSetFormValue', SET, {path, value}).catch(() => null);
+for (const el of document.querySelectorAll('#nm, #em, #li, input[type=radio], textarea'))
+  el.addEventListener('change', () => save(el.name || el.id, el.value));
+document.querySelector('form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  document.body.dataset.submitted = '1';
+  gql('ApiSubmitApplication', 'mutation ApiSubmitApplication { submit { ok } }', {}).catch(() => null);
+});
+// Location autocomplete: typing runs the suggestion READ, then shows synthetic suggestions.
+const loc = document.getElementById('loc'), list = document.getElementById('loc-list');
+const PLACES = {ok: ['Sampleton, Ontario, Canada', 'Sampleton, England, United Kingdom', 'Sampletonville, Texas, United States'],
+                ambiguous: ['Sampleton, England, United Kingdom', 'Sampleton, Wales, United Kingdom']};
+loc.addEventListener('input', async () => {
+  await gql('ApiAutocompleteGeoLocation', 'query ApiAutocompleteGeoLocation($q: String!) { geo(q: $q) { name } }',
+            {q: loc.value}).catch(() => null);
+  list.innerHTML = '';
+  for (const name of PLACES[q.get('loc') || 'ok']) {
+    const li = document.createElement('li'); li.setAttribute('role', 'option'); li.textContent = name;
+    li.addEventListener('click', () => { loc.value = name; list.hidden = true; save('loc', name); });
+    list.append(li);
+  }
+  list.hidden = false; loc.setAttribute('aria-expanded', 'true');
+});
+// Resume upload flow.
+if (mode === 'handle_at_load') addEventListener('load', () => gql('ApiCreateFileUploadHandle', HANDLE, {name: 'x'}).catch(() => null));
+if (mode === 'assoc_at_load') addEventListener('load', () => gql('ApiSetFormValueToFile', TO_FILE, {path: 'resume', handle: 'hdl-0f3c9a7e5b21'}).catch(() => null));
+if (mode === 'storage_at_load') addEventListener('load', () => fetch(STORAGE_URL, {method: 'POST', body: 'x'}).catch(() => null));
+document.getElementById('resume').addEventListener('change', async (event) => {
+  const file = event.target.files[0];
+  if (mode === 'show_first' || mode === 'visible_only') document.getElementById('resume-name').textContent = file.name;
+  if (mode === 'visible_only') return;
+  try {
+    const created = await (await gql('ApiCreateFileUploadHandle', HANDLE, {name: file.name})).json();
+    const handle = created.data.createFileUploadHandle.handle;
+    if (mode === 'unknown_op') await gql('ApiParseResumeForAutofill', 'mutation ApiParseResumeForAutofill($h: String!) { parse(h: $h) { ok } }', {h: 'h'});
+    const body = new FormData(); body.append('key', handle); body.append('file', file);
+    const stored = await fetch(mode === 'unknown_storage' ? 'https://other-storage.test/bucket' : STORAGE_URL,
+                               {method: mode === 'storage_put' ? 'PUT' : 'POST', body});
+    if (!stored.ok) return;
+    const associated = await gql('ApiSetFormValueToFile', TO_FILE,
+      {path: 'resume', handle: mode === 'assoc_wrong_handle' ? 'hdl-someone-elses-file' : handle});
+    if (!associated.ok) return;
+    if (mode === 'submit_after_upload') await gql('ApiSubmitApplication', 'mutation ApiSubmitApplication { submit { ok } }', {});
+    if (mode !== 'no_show') document.getElementById('resume-name').textContent = file.name;
+  } catch (e) { /* a blocked step: the page shows nothing */ }
+});
+</script></body></html>

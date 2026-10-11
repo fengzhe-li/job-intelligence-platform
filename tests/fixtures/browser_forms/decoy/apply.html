@@ -1,0 +1,13 @@
+<!doctype html><html><head><title>Graduate Engineer — ExampleCo</title>
+<script>window.__clicks = []; document.addEventListener('click', e => { const b = e.target.closest('button'); if (b) window.__clicks.push(b.innerText.trim()); }, true);</script>
+</head><body>
+<h1>ExampleCo — Graduate Engineer</h1>
+<form action="/submit" method="post">
+  <label for="fn">First name</label><input id="fn" required>
+  <div class="actions">
+    <button type="submit" class="btn">Submit</button>
+    <button type="submit" class="btn">Next ›</button>
+    <button type="button" class="btn">Continue to submit</button>
+    <button type="button" class="btn" onclick="location.href='step-2.html'">Next</button>
+  </div>
+</form></body></html>

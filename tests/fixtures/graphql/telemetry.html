@@ -1,0 +1,28 @@
+<!doctype html><html><head><title>Graduate Engineer — ExampleCo</title>
+<script>
+// Synthetic hosted form whose page also sends writes the runner never authorizes. ?mode=<case>
+// picks the write; ?when=load|fill picks whether it fires right after load or on each field change.
+// Bodies carry a sentinel that must never be persisted.
+const q = new URLSearchParams(location.search), mode = q.get('mode') || 'rum', when = q.get('when') || 'fill';
+const json = (body) => ({method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(body)});
+const gql = (operationName, query) => fetch('/api/non-user-graphql', json({operationName, query, variables: {t: 'SECRET-BODY-SENTINEL'}}));
+const SEND = {
+  rum: () => fetch('https://browser-intake-datadoghq.com/api/v2/rum?ddsource=browser', json({t: 'SECRET-BODY-SENTINEL'})),
+  rum_put: () => fetch('https://browser-intake-datadoghq.com/api/v2/rum', {...json({}), method: 'PUT'}),
+  other: () => fetch('https://collector.analytics.test/collect', json({t: 'SECRET-BODY-SENTINEL'})),
+  onhost: () => fetch('/api/collect', json({t: 'SECRET-BODY-SENTINEL'})),
+  submit: () => gql('ApiSubmitApplication', 'mutation ApiSubmitApplication { submit { ok } }'),
+  unknown: () => gql('ApiDoSomething', 'mutation ApiDoSomething { x { ok } }'),
+};
+const fire = () => (SEND[mode] || (() => null))().catch(() => null);
+if (when === 'load') addEventListener('DOMContentLoaded', fire);
+addEventListener('DOMContentLoaded', () => {
+  if (mode === 'rum') setTimeout(fire, 0);  // a beacon right after load, like a RUM SDK
+  for (const el of document.querySelectorAll('input')) el.addEventListener('change', () => { if (when === 'fill') fire(); });
+});
+</script></head><body><h1>ExampleCo — Graduate Engineer</h1>
+<form action="/submit" method="post">
+  <label for="fn">First name *</label><input id="fn" required>
+  <label for="em">Email *</label><input id="em" type="email" required>
+  <button type="submit">Submit application</button>
+</form></body></html>

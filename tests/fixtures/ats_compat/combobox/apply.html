@@ -1,0 +1,20 @@
+<!doctype html><html><head><title>Graduate Engineer — ExampleCo</title></head><body><h1>ExampleCo — Graduate Engineer</h1>
+<form action="/submit" method="post">
+  <label for="fn">First name *</label><input id="fn" required>
+  <label id="co-label" for="co">Country *</label>
+  <input id="co" role="combobox" aria-controls="co-list" aria-expanded="false" aria-required="true" autocomplete="off">
+  <input type="hidden" name="country" id="co-value">
+  <ul id="co-list" role="listbox" hidden></ul>
+  <button type="submit">Submit application</button>
+</form>
+<script>
+const OPTIONS = window.COMBO_OPTIONS || ['United States', 'United Kingdom (Crown Dependencies)', 'United Kingdom', 'France'];
+const input = document.getElementById('co'), list = document.getElementById('co-list');
+input.addEventListener('click', () => {
+  list.innerHTML = '';
+  OPTIONS.forEach((text, i) => { const li = document.createElement('li'); li.setAttribute('role', 'option'); li.id = 'opt-' + i;
+    li.textContent = text; li.addEventListener('click', () => { input.value = text; document.getElementById('co-value').value = text;
+      list.hidden = true; input.setAttribute('aria-expanded', 'false'); }); list.appendChild(li); });
+  list.hidden = false; input.setAttribute('aria-expanded', 'true');
+});
+</script></body></html>

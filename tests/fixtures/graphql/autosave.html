@@ -1,0 +1,43 @@
+<!doctype html><html><head><title>Graduate Engineer — ExampleCo</title>
+<script>
+// Synthetic per-field autosave form: each field change is persisted with a GraphQL mutation,
+// like a hosted ATS form. ?mode=<case> picks when and what is sent; variables carry sentinels
+// that must never be persisted by the runner.
+const mode = new URLSearchParams(location.search).get('mode') || 'autosave';
+const post = (path, operationName, query, variables) => fetch(path, {method: 'POST',
+  headers: {'content-type': 'application/json'}, body: JSON.stringify({operationName, query, variables})});
+const SET = 'mutation ApiSetFormValue($path: String!, $value: String) { setFormValue(path: $path, value: $value) { ok } }';
+const autosave = (el, path = '/api/non-user-graphql') => post(path, 'ApiSetFormValue', SET,
+  {path: el.id, value: el.value, token: 'SECRET-TOKEN-SENTINEL', email: 'SECRET-VARIABLE-SENTINEL'});
+const SEND = {
+  autosave: (el) => autosave(el),
+  other: (el) => post('/api/non-user-graphql', 'ApiSetDraft', 'mutation ApiSetDraft($v: String) { setDraft(v: $v) { ok } }', {v: el.value}),
+  submit: (el) => post('/api/non-user-graphql', 'ApiSubmitApplication', 'mutation ApiSubmitApplication { submit { ok } }', {}),
+  endpoint: (el) => autosave(el, '/api/other-graphql'),
+  late: (el) => setTimeout(() => autosave(el), 250),
+  next: (el) => autosave(el),
+  load: (el) => autosave(el),
+};
+if (mode === 'load') addEventListener('DOMContentLoaded', () => autosave(document.getElementById('fn')));
+addEventListener('DOMContentLoaded', () => {
+  for (const el of document.querySelectorAll('#page1 input')) {
+    el.addEventListener('input', () => { if (mode !== 'late') SEND[mode](el); });
+    el.addEventListener('blur', () => SEND[mode](el));
+  }
+  const next = document.getElementById('next');
+  next.addEventListener('click', () => {
+    if (mode === 'next') autosave(document.getElementById('fn'));
+    document.getElementById('page1').hidden = true; document.getElementById('page2').hidden = false;
+  });
+  document.querySelector('form').addEventListener('submit', () => autosave(document.getElementById('fn')));
+});
+</script></head><body><h1>ExampleCo — Graduate Engineer</h1>
+<form action="/submit" method="post">
+  <div id="page1">
+    <label for="fn">First name *</label><input id="fn" required>
+    <label for="em">Email *</label><input id="em" type="email" required>
+    <label for="nick">Favourite colour</label><input id="nick">
+    <button type="button" id="next">Next</button>
+  </div>
+  <div id="page2" hidden><button type="submit">Submit application</button></div>
+</form></body></html>

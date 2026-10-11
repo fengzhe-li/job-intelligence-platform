@@ -73,7 +73,7 @@ class CrossSourceManualImportDedupTests(unittest.TestCase):
         self.assertEqual(greenhouse_obs.source_job_id, "wr-1")
 
     def test_merged_job_produces_exactly_one_trackable_application_id(self) -> None:
-        # Applications are keyed by job_id (see cli _application_create), so a
+        # Applications are keyed by job_id (see application_lifecycle.ensure_application), so a
         # single merged canonical Job id naturally prevents two applications
         # for the same underlying vacancy -- confirm the merge really does
         # produce one job id, not two ids that happen to look similar.

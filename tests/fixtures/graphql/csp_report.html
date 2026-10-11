@@ -1,0 +1,36 @@
+<!doctype html><html><head><title>Graduate Engineer — ExampleCo</title>
+<script>
+// Synthetic hosted form whose page sends a third-party CSP report right after the first field
+// (Name) is filled, like an embedded Google frame reporting a frame-ancestors violation.
+// In ?mode=report the server sends `Content-Security-Policy-Report-Only: img-src 'self'; report-uri <csp host>`,
+// and a blob: image (no network fetch) makes the BROWSER itself POST a real CSP report
+// (resource type "other").
+// The other modes send an equivalent write with fetch. Bodies carry a sentinel never persisted.
+const q = new URLSearchParams(location.search), mode = q.get('mode') || 'report';
+const CSP = 'https://csp.withgoogle.com/csp/frame-ancestors/38fac9d5b82543fc4729580d18ff2d3d';
+const json = (body) => ({method: 'POST', headers: {'content-type': 'application/csp-report'}, body: JSON.stringify(body)});
+const gql = (operationName, query) => fetch('/api/non-user-graphql', {method: 'POST',
+  headers: {'content-type': 'application/json'}, body: JSON.stringify({operationName, query, variables: {t: 'SECRET-BODY-SENTINEL'}})});
+const SEND = {
+  report: () => { const img = new Image(); img.src = URL.createObjectURL(new Blob(['x'])); document.body.appendChild(img); return Promise.resolve(); },
+  fetch: () => fetch(CSP, json({'csp-report': {t: 'SECRET-BODY-SENTINEL'}})),
+  put: () => fetch(CSP, {...json({}), method: 'PUT'}),
+  google: () => fetch('https://www.google.com/csp/report', json({t: 'SECRET-BODY-SENTINEL'})),
+  parent: () => fetch('https://withgoogle.com/csp/frame-ancestors/x', json({t: 'SECRET-BODY-SENTINEL'})),
+  onhost: () => fetch('/api/collect', json({t: 'SECRET-BODY-SENTINEL'})),
+  submit: () => gql('ApiSubmitApplication', 'mutation ApiSubmitApplication { submit { ok } }'),
+};
+addEventListener('DOMContentLoaded', () => {
+  let sent = false;
+  document.getElementById('fn').addEventListener('change', () => {
+    if (sent) return;
+    sent = true;
+    SEND[mode]().catch(() => null);
+  });
+});
+</script></head><body><h1>ExampleCo — Graduate Engineer</h1>
+<form action="/submit" method="post">
+  <label for="fn">First name *</label><input id="fn" required>
+  <label for="em">Email *</label><input id="em" type="email" required>
+  <button type="submit">Submit application</button>
+</form></body></html>

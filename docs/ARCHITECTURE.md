@@ -125,3 +125,30 @@ Generated CV PDFs are served by `GET /cv/pdf?id=<cv_version_id>`:
 - Responses are `application/pdf` with `nosniff`.
 
 Submitting via `POST /application/submit` requires an explicit "I reviewed this exact CV" confirmation.
+
+
+## Human-approved submission boundary (experimental MVP)
+
+`submission/` consumes an already-reviewed immutable package after the existing
+job/JD/CV pipeline. It does not feed decisions back into discovery, ranking,
+eligibility or CV generation, and its only executor is a manual handoff.
+
+`SubmissionService` owns approval, queue, claim, result and verification boundaries.
+`SubmissionStore` projects queue state from append-only events and stores verified
+receipts separately. Frozen package models bind the exact artifact/PDF hash,
+application URL, answer versions and review inputs; the PDF is sealed locally.
+
+ApplicationStore and submission writes share a reentrant process/thread lock.
+Approval/gate checks run before execution. An executor gets only a package and
+idempotency key, never a store. Receipt verification is a separate human action;
+reconciliation alone calls the internal ApplicationStore receipt entry point.
+That entry point appends a stable submission history event before updating the
+current application snapshot, enabling idempotent recovery after interruption.
+The existing public ApplicationStore API and ApplicationStatus enum remain intact.
+
+Runtime journals and evidence remain under the ignored local store; isolated browser
+profiles live under the separate, ignored `data/runtime/`. The MVP uses POSIX flock and
+single-user human attestation, and provides no automatic retry or remote callback
+endpoint. Browser execution is supervised and stop-only (local headed Chrome, or
+Browserbase); it never performs the final submission. See [SUBMISSION_MVP.md](SUBMISSION_MVP.md)
+for the full lifecycle, command reference, evidence strategies and recovery limits.

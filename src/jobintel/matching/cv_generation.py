@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from jobintel.analysis.jd_requirements import JDRequirements, extract_jd_requirements
+from jobintel.analysis.role_tracks import SKILL_PATTERNS
 from jobintel.matching.cv_document import (
     CV_DOCUMENT_FORMAT,
     CVDocument,
@@ -23,13 +24,16 @@ from jobintel.matching.cv_document import (
 )
 from jobintel.matching.cv_render import LAYOUT_PRESETS, RenderResult, render_cv_document
 from jobintel.matching.project_selection import (
+    TRANSFERABLE_DIMENSIONS,
     ProjectMatch,
     select_top_projects_hybrid,
     select_top_projects_tailored,
 )
+from jobintel.analysis.eligibility import IneligibleJobError, evaluate_job_eligibility
 from jobintel.matching.review_gate import evaluate_review_gate
 from jobintel.models.candidate import CandidateProfile, CapabilityEvidence
 from jobintel.models.cv_artifact import GeneratedCVArtifact, ProjectBullet
+from jobintel.models.eligibility import EligibilityState
 from jobintel.models.job import Job
 from jobintel.models.taxonomy import EvidenceSourceType
 from jobintel.storage.cv_artifact_store import CVArtifactStore
@@ -76,7 +80,38 @@ FOCUS_BULLET_FLOOR = 2
 # A project is "focus" when its evidence strength is at least this share of
 # the strongest selected project's.
 FOCUS_STRENGTH_RATIO = 0.75
-MAX_INTERNSHIP_DETAIL = 3
+# Internship bullets per role on the full (pre-fit) document: the most
+# JD-relevant, non-overlapping variants from the role's evidence pool. The page
+# fitter then keeps 2-4 per role depending on space (1 only under heavy pressure).
+MAX_INTERNSHIP_DETAIL = 4
+# Under page pressure a role keeps this many substantive bullets until
+# lower-value secondary-project detail has been cut.
+INTERNSHIP_DETAIL_FLOOR = 2
+# Concrete engineering activities that make an internship bullet technically
+# substantive even when it shares no literal term with a narrow JD.
+_ENGINEERING_ACTIVITY = re.compile(
+    r"\b(?:test(?:s|ing)?|debug(?:ging)?|troubleshoot(?:ing)?|monitor(?:ing)?|configur(?:e|ed|ation)|"
+    r"automat(?:e|ed|ing|ion)|databases?|data (?:processing|validation|extraction|analysis)|validat(?:e|ed|ing|ion)|"
+    r"development|maintenance|deploy(?:ed|ment)?|scripts?|interfaces?|integration)\b"
+)
+# Internship topics: one counts for a bullet only when the JD names it too, so the
+# same evidence pool yields a different selection and order per JD (e.g. Power BI
+# dashboards for a BI role, testing/debugging for a software role).
+_EXPERIENCE_TOPICS = tuple(re.compile(pattern) for pattern in (
+    r"\bpython\b", r"\bpandas\b", r"\bsql\b|\bdatabases?\b", r"\bexcel\b|\bspreadsheets?\b",
+    r"\bpower bi\b|\bdashboards?\b", r"\breport(?:s|ing)?\b", r"\bkpis?\b", r"\binventory\b|\bstock\b",
+    r"\bturnover\b", r"\btest(?:s|ing|ed)?\b", r"\bdebug(?:ging)?\b|\btroubleshoot(?:ing)?\b",
+    r"\bautomat(?:e|ed|es|ing|ion)\b", r"\bvalidat(?:e|ed|ing|ion)\b", r"\bmonitor(?:ing)?\b",
+    r"\bnetwork(?:s|ing)?\b", r"\bfacial\b|\bimage\b|\brecognition\b|\bcomputer vision\b|\bmachine learning\b",
+    r"\bsoftware\b", r"\bdata (?:quality|cleaning|processing)\b", r"\brequirements?\b",
+))
+# A reflective summary ("gained practical experience of ...") restates activities
+# other bullets show concretely; it ranks below concrete evidence of equal substance.
+_GENERIC_EXPERIENCE = re.compile(r"\bgained (?:practical |hands-on )?experience\b|\bexposure to\b")
+GENERIC_EXPERIENCE_FACTOR = 0.5
+# Beyond the first two bullets of a role, a variant must score at least this
+# share of the role's best variant to earn space (2-4 bullets by relevance).
+EXTRA_INTERNSHIP_MIN_SHARE = 0.5
 # A quote repeating at least this share of a stronger quote's content is not a
 # distinct bullet and is never included; smaller overlaps only down-weight it.
 REPETITIVE_OVERLAP = 0.35
@@ -146,6 +181,11 @@ def generate_cv(
     nothing unsupported is ever promoted.
     """
     jd = jd or extract_jd_requirements(job)
+    # 0. Eligibility Gate: Evaluate eligibility BEFORE any project selection, bullet rewriting, or PDF rendering
+    eligibility = evaluate_job_eligibility(job, candidate)
+    if eligibility.state == EligibilityState.HARD_INELIGIBLE:
+        raise IneligibleJobError(f"Cannot generate CV for HARD_INELIGIBLE job: {eligibility.reason}", decision=eligibility)
+
     if github_freshness_state is None:
         from jobintel.github_sync import check_github_freshness
         github_freshness_state = check_github_freshness(store_root, candidate)
@@ -244,7 +284,8 @@ def generate_cv(
     core_skills = [name for index, (name, priority) in enumerate(ranked_skills) if priority >= 1.5 or (priority > 0 and index < MAX_CORE_SKILLS)]
     extra_skills = [name for name, _ in ranked_skills if name not in core_skills]
     protected_skills = {name.casefold() for name, priority in ranked_skills if priority >= 2}
-    document = _assemble_document(candidate, jd, _assign_emphasis(projects), group_skills(core_skills, categories))
+    _mark_cross_project_redundancy(projects)
+    document = _assemble_document(candidate, jd, _assign_emphasis(projects), group_skills(core_skills, categories), job.description)
 
     artifact_id = f"cv-{uuid.uuid4().hex[:12]}"
     pdf_path = Path(store_root) / DEFAULT_PDF_DIR / f"{artifact_id}.pdf"
@@ -254,7 +295,18 @@ def generate_cv(
     cv_text = document_to_text(document)
 
     included_bullets = [bullet for project in document.projects for bullet in project.bullets]
-    evidence_ids_used = sorted({evidence_id for bullet in included_bullets for evidence_id in bullet.evidence_ids})
+    experience_statements = {
+        clean_list_marker(statement.text): statement for item in candidate.experience for statement in item.evidence
+    }
+    # A variant's id plus the master units it restates: the audit trail of every internship line.
+    included_experience_ids = {
+        evidence_id
+        for entry in document.experience
+        for detail in entry.details
+        if detail in experience_statements
+        for evidence_id in (experience_statements[detail].id, *experience_statements[detail].grounded_in)
+    }
+    evidence_ids_used = sorted({evidence_id for bullet in included_bullets for evidence_id in bullet.evidence_ids} | included_experience_ids)
     selected_project_ids = [project.project_id for project in document.projects]
     included_skills = {name.casefold() for name in document.skills()}
     skills = [name for name, _ in ranked_skills if name.casefold() in included_skills]
@@ -489,6 +541,22 @@ def _content_overlap(text: str, other: str) -> float:
     return token_overlap
 
 
+def _mark_cross_project_redundancy(projects: list[ProjectBlock]) -> None:
+    """A bullet that largely repeats a stronger bullet of ANOTHER selected
+    project is just as repetitive on the page as a within-project repeat, so it
+    is the first to go under page pressure. Weights are left unchanged."""
+    for project in projects:
+        for bullet in project.bullets:
+            stronger = [
+                other.text
+                for other_project in projects
+                if other_project is not project
+                for other in other_project.bullets
+                if other.weight > bullet.weight
+            ]
+            bullet.redundancy = max([bullet.redundancy, *(_content_overlap(bullet.text, text) for text in stronger)])
+
+
 def _project_strength(project: ProjectBlock) -> tuple[float, float]:
     """JD relevance + evidence strength: the project-selection score for this
     job first, then the strength of the project's own strongest bullets."""
@@ -632,25 +700,76 @@ def _education_entries(candidate: CandidateProfile) -> list[DatedEntry]:
     ]
 
 
-def _experience_entries(candidate: CandidateProfile) -> list[DatedEntry]:
+def _jd_dimensions(jd_text: str) -> list[str]:
+    return [pattern for pattern, _ in TRANSFERABLE_DIMENSIONS.values() if re.search(pattern, (jd_text or "").casefold())]
+
+
+def _experience_relevance(text: str, jd: JDRequirements, jd_dimensions: list[str], jd_topics: list[re.Pattern] = ()) -> float:
+    """Internship-bullet value: literal JD terms first, then technical
+    substance -- named technologies, concrete engineering activities and
+    software-engineering dimensions the JD names. Shared filler words
+    ("with", "teams", "improve") count for nothing."""
+    lowered = text.casefold()
+    technologies = {skill for skill in SKILL_PATTERNS if re.search(rf"(?<!\w){re.escape(skill)}(?!\w)", text)}
+    activities = {match.group(0).casefold()[:5] for match in _ENGINEERING_ACTIVITY.finditer(lowered)}
+    dimensions = sum(1 for pattern in jd_dimensions if re.search(pattern, lowered))
+    topics = sum(1 for pattern in jd_topics if pattern.search(lowered))
+    score = (10 * _jd_term_overlap(text, jd) + 0.5 * len(technologies) + 0.25 * len(activities) + 0.5 * dimensions
+             + 1.0 * topics)
+    return score * GENERIC_EXPERIENCE_FACTOR if _GENERIC_EXPERIENCE.search(lowered) else score
+
+
+def _jd_topics(jd_text: str) -> list[re.Pattern]:
+    lowered = (jd_text or "").casefold()
+    return [pattern for pattern in _EXPERIENCE_TOPICS if pattern.search(lowered)]
+
+
+def _select_experience_statements(statements, jd: JDRequirements | None, jd_text: str) -> list:
+    """Per JD: the role's evidence pool ranked by relevance (ties keep the
+    authored order), skipping any variant that restates a master unit an
+    already-chosen bullet covers, up to MAX_INTERNSHIP_DETAIL."""
+    if jd is None:
+        return list(statements)[:MAX_INTERNSHIP_DETAIL]
+    dimensions, topics = _jd_dimensions(jd_text), _jd_topics(jd_text)
+    scores = {statement.id: _experience_relevance(statement.text, jd, dimensions, topics) for statement in statements}
+    ranked = sorted(statements, key=lambda statement: -scores[statement.id])
+    best = scores[ranked[0].id] if ranked else 0.0
+    chosen, covered = [], set()
+    for statement in ranked:
+        units = set(statement.grounded_in) or {statement.id}
+        if units & covered:
+            continue
+        if len(chosen) >= 2 and scores[statement.id] < EXTRA_INTERNSHIP_MIN_SHARE * best:
+            break
+        chosen.append(statement)
+        covered |= units
+        if len(chosen) == MAX_INTERNSHIP_DETAIL:
+            break
+    return chosen
+
+
+def _experience_entries(candidate: CandidateProfile, jd: JDRequirements | None = None, jd_text: str = "") -> list[DatedEntry]:
     entries = []
     for item in candidate.experience:
         dates = ""
         if item.start_date:
             dates = f"{item.start_date:%b %Y} – {item.end_date:%b %Y}" if item.end_date else f"{item.start_date:%b %Y} – Present"
-        details = [clean_list_marker(item.description)] if item.description.strip() else []
+        if item.evidence:
+            details = [clean_list_marker(statement.text) for statement in _select_experience_statements(item.evidence, jd, jd_text)]
+        else:
+            details = [clean_list_marker(item.description)] if item.description.strip() else []
         entries.append(DatedEntry(heading=f"{item.title}, {item.organisation}", dates=dates, details=details))
     return entries
 
 
-def _assemble_document(candidate: CandidateProfile, jd: JDRequirements, projects: list[ProjectBlock], skill_groups) -> CVDocument:
+def _assemble_document(candidate: CandidateProfile, jd: JDRequirements, projects: list[ProjectBlock], skill_groups, jd_text: str = "") -> CVDocument:
     """Stable core sections come from structured Education/Experience records
     when present, otherwise verbatim from the candidate's own authored CV text.
     A section neither can supply is left empty (and reported), never invented."""
     base = select_base_cv(candidate, _jd_terms(jd))
     authored = base[1] if base else None
     education = _education_entries(candidate) or (copy.deepcopy(authored.education) if authored else [])
-    experience = _experience_entries(candidate) or (copy.deepcopy(authored.experience) if authored else [])
+    experience = _experience_entries(candidate, jd, jd_text) or (copy.deepcopy(authored.experience) if authored else [])
     return CVDocument(
         name=candidate.name,
         headline=authored.headline if authored else "",
@@ -688,6 +807,8 @@ class _PageFitter:
         self.doc = document
         self.jd = jd
         self.jd_words = set(_CONTENT_WORD.findall((jd_text or "").casefold()))
+        self.jd_dimensions = _jd_dimensions(jd_text)
+        self.jd_topics = _jd_topics(jd_text)
         self.skill_order = {name.casefold(): index for index, name in enumerate(skill_order)}
         self.extra_skills = extra_skills
         self.protected_skills = protected_skills
@@ -733,6 +854,7 @@ class _PageFitter:
             self._drop_low_value_skill,
             self._denser_layout,
             self._reduce_secondary_project,
+            self._drop_internship_below_floor,
             self._drop_weakest_secondary_project,
             self._narrow_layout,
             self._reduce_focus_project,
@@ -780,16 +902,23 @@ class _PageFitter:
         shared = self.jd_words & set(_CONTENT_WORD.findall(text.casefold()))
         return _jd_term_overlap(text, self.jd) + 0.01 * len(shared)
 
-    # -- JD-aware internship budget: >= 1 bullet per role, more only if JD-relevant --
+    def _experience_relevance(self, text: str) -> float:
+        return _experience_relevance(text, self.jd, self.jd_dimensions, self.jd_topics)
+
+    def _ranked_details(self, details: list[str]) -> list[str]:
+        # Stable: equal scores keep the authored order.
+        return sorted(details, key=lambda detail: -self._experience_relevance(detail))
+
+    # -- internship budget: >= 1 bullet per role, more when JD-relevant or technically substantive --
 
     def _budget_internships(self) -> None:
         for entry in self.doc.experience:
             if len(entry.details) <= 1:
                 continue
-            relevant = [detail for detail in entry.details if _jd_term_overlap(detail, self.jd) > 0]
+            relevant = [detail for detail in entry.details if self._experience_relevance(detail) > 0]
             budget = max(1, min(len(relevant), MAX_INTERNSHIP_DETAIL))
-            keep = sorted(entry.details, key=lambda detail: -self._relevance(detail))[:budget]
-            if len(keep) < len(entry.details):
+            keep = self._ranked_details(entry.details)[:budget]
+            if len(keep) < len(entry.details):  # entry.details is already in relevance order
                 entry.details = [detail for detail in entry.details if detail in keep]
                 self.actions.append(f"budget: {entry.heading} limited to {budget} strongest bullet(s)")
 
@@ -809,13 +938,21 @@ class _PageFitter:
         project.bullets.remove(bullet)
         return f"overflow: dropped repetitive bullet from {project.project_id}"
 
-    def _drop_extra_internship_bullet(self) -> str | None:
-        extras = [(self._relevance(detail), -index, entry, detail) for index, entry in enumerate(self.doc.experience) if len(entry.details) > 1 for detail in entry.details]
+    def _drop_extra_internship_bullet(self, floor: int = INTERNSHIP_DETAIL_FLOOR) -> str | None:
+        extras = [
+            (self._experience_relevance(detail), -index, entry, detail)
+            for index, entry in enumerate(self.doc.experience)
+            if len(entry.details) > floor
+            for detail in entry.details
+        ]
         if not extras:
             return None
         _, _, entry, detail = min(extras, key=lambda item: (item[0], item[1]))
         entry.details.remove(detail)
         return f"overflow: dropped extra internship bullet ({entry.heading})"
+
+    def _drop_internship_below_floor(self) -> str | None:
+        return self._drop_extra_internship_bullet(floor=1)
 
     def _module_items(self, line: str) -> tuple[str, list[str]] | None:
         match = _LIST_LINE.match(line)
@@ -941,7 +1078,9 @@ class _PageFitter:
                 existing = current.get(_bullet_key(bullet))
                 if existing is None or existing.text != bullet.text:
                     missing_bullets.append((project.emphasis != "focus", -bullet.weight, bullet))
-        for _, _, bullet in sorted(missing_bullets, key=lambda item: item[:2]):
+        # Repetitive project bullets are restored only after internship evidence.
+        repetitive = [item for item in missing_bullets if item[2].redundancy >= REDUNDANT_OVERLAP]
+        for _, _, bullet in sorted((item for item in missing_bullets if item not in repetitive), key=lambda item: item[:2]):
             yield lambda doc, bullet=bullet: self._restore_bullet(doc, bullet)
 
         for project in sorted(self.full.projects, key=_project_strength, reverse=True):
@@ -952,16 +1091,19 @@ class _PageFitter:
             for line_index in range(len(entry.details)):
                 yield lambda doc, entry_index=entry_index, line_index=line_index: self._restore_module_line(doc, entry_index, line_index)
 
-        # Only JD-relevant internship detail earns space beyond the 1-bullet
-        # floor; generic internship bullets never fill the page.
+        # Only JD-relevant or technically substantive internship detail earns
+        # space beyond the 1-bullet floor; generic bullets never fill the page.
         experience_details = [
-            (-self._relevance(detail), entry_index, detail)
+            (-self._experience_relevance(detail), entry_index, detail)
             for entry_index, entry in enumerate(self.full.experience)
             for detail in entry.details
-            if _jd_term_overlap(detail, self.jd) > 0
+            if self._experience_relevance(detail) > 0
         ]
         for _, entry_index, detail in sorted(experience_details, key=lambda item: item[:2]):
-            yield lambda doc, entry_index=entry_index, detail=detail: self._restore_detail(doc.experience, self.full.experience, entry_index, detail, "JD-relevant internship bullet")
+            yield lambda doc, entry_index=entry_index, detail=detail: self._restore_detail(doc.experience, self.full.experience, entry_index, detail, "substantive internship bullet")
+
+        for _, _, bullet in sorted(repetitive, key=lambda item: item[:2]):
+            yield lambda doc, bullet=bullet: self._restore_bullet(doc, bullet)
 
         # Supported skills in relevance order: skills dropped under pressure
         # first, then ones that were never in the core set.

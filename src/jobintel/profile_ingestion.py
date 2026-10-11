@@ -18,6 +18,7 @@ from jobintel.models.candidate import (
     Education,
     EvidenceSource,
     Experience,
+    ExperienceEvidence,
     Project,
 )
 from jobintel.models.taxonomy import EvidenceSourceType, RoleTrack, SkillCategory
@@ -375,6 +376,18 @@ def load_candidate_profile(store_root: Path | str) -> CandidateProfile | None:
         location=payload.get("location"),
         linkedin_url=payload.get("linkedin_url"),
         github_url=payload.get("github_url"),
+        nationality=payload.get("nationality"),
+        citizenship=payload.get("citizenship"),
+        security_clearance=payload.get("security_clearance"),
+        security_clearance_eligible=payload.get("security_clearance_eligible"),
+        requires_visa_sponsorship=payload.get("requires_visa_sponsorship"),
+        current_uk_visa_status=payload.get("current_uk_visa_status"),
+        uk_visa_expiry=payload.get("uk_visa_expiry"),
+        has_uk_right_to_work=payload.get("has_uk_right_to_work"),
+        student_visa_conditions=payload.get("student_visa_conditions"),
+        graduate_route_intended=payload.get("graduate_route_intended"),
+        requires_skilled_worker_sponsorship_future=payload.get("requires_skilled_worker_sponsorship_future"),
+        has_permanent_right_to_work=payload.get("has_permanent_right_to_work"),
     )
     sources: dict[str, EvidenceSource] = {}
     for item in payload.get("evidence_sources", []):
@@ -414,6 +427,7 @@ def load_candidate_profile(store_root: Path | str) -> CandidateProfile | None:
                 last_verified=date.fromisoformat(item["last_verified"]) if item.get("last_verified") else None,
             )
         )
+    profile.experience.extend(_experience_from_payload(payload.get("experience", []), sources))
     for item in payload.get("cv_versions", []):
         profile.cv_versions.append(CVVersion(id=item["id"], category=item["category"], text=item["text"], evidence_source=sources[item["source_id"]]))
     for item in payload.get("projects", []):
@@ -497,6 +511,23 @@ def _attach_structural_source(profile: CandidateProfile, source: EvidenceSource,
         profile.experience.append(Experience(organisation=source.title, title=source.title, description=text, evidence_source=source))
 
 
+# Optional profile-level facts persisted only when set (see _write_profile).
+PROFILE_ATTRIBUTE_FIELDS = (
+    "nationality",
+    "citizenship",
+    "security_clearance",
+    "security_clearance_eligible",
+    "requires_visa_sponsorship",
+    "current_uk_visa_status",
+    "uk_visa_expiry",
+    "has_uk_right_to_work",
+    "student_visa_conditions",
+    "graduate_route_intended",
+    "requires_skilled_worker_sponsorship_future",
+    "has_permanent_right_to_work",
+)
+
+
 def _write_profile(root: Path, profile: CandidateProfile) -> Path:
     path = root / "profile" / "candidate_profile.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -509,6 +540,7 @@ def _write_profile(root: Path, profile: CandidateProfile) -> Path:
     for project in profile.projects:
         for source in project.evidence_sources:
             sources[source.id] = source
+    sources.update(experience_sources(profile))
     payload = {
         "id": profile.id,
         "name": profile.name,
@@ -568,8 +600,87 @@ def _write_profile(root: Path, profile: CandidateProfile) -> Path:
             for project in profile.projects
         ],
     }
+    if experience_payload(profile):
+        payload["experience"] = experience_payload(profile)
+    for attr in PROFILE_ATTRIBUTE_FIELDS:
+        val = getattr(profile, attr, None)
+        if val is not None:
+            payload[attr] = val
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
     return path
+
+
+def experience_sources(profile: CandidateProfile) -> dict[str, EvidenceSource]:
+    return {
+        source.id: source
+        for item in profile.experience
+        for evidence in (*item.master, *item.evidence)
+        for source in evidence.sources
+    }
+
+
+def _experience_evidence_payload(evidence: ExperienceEvidence) -> dict:
+    payload = {
+        "id": evidence.id,
+        "text": evidence.text,
+        "source_ids": [source.id for source in evidence.sources],
+        "source_locations": list(evidence.source_locations),
+        "capability_names": list(evidence.capability_names),
+        "forbidden_extrapolations": list(evidence.forbidden_extrapolations),
+    }
+    if evidence.grounded_in:
+        payload["grounded_in"] = list(evidence.grounded_in)
+    return payload
+
+
+def _experience_evidence_from_payload(evidence: dict, sources: dict[str, EvidenceSource]) -> ExperienceEvidence:
+    return ExperienceEvidence(
+        id=evidence["id"],
+        text=evidence["text"],
+        sources=tuple(sources[source_id] for source_id in evidence["source_ids"]),
+        source_locations=tuple(evidence["source_locations"]),
+        capability_names=tuple(evidence.get("capability_names", ())),
+        forbidden_extrapolations=tuple(evidence.get("forbidden_extrapolations", ())),
+        grounded_in=tuple(evidence.get("grounded_in", ())),
+    )
+
+
+def experience_payload(profile: CandidateProfile) -> list[dict]:
+    """Structured experience records with per-statement provenance. Only
+    records carrying an `id` (curated) are persisted; raw imported
+    descriptions are rebuilt from their sources as before."""
+    return [
+        {
+            "id": item.id,
+            "organisation": item.organisation,
+            "title": item.title,
+            "description": item.description,
+            "start_date": item.start_date.isoformat() if item.start_date else None,
+            "end_date": item.end_date.isoformat() if item.end_date else None,
+            "provenance_notes": list(item.provenance_notes),
+            "evidence": [_experience_evidence_payload(evidence) for evidence in item.evidence],
+            **({"master": [_experience_evidence_payload(unit) for unit in item.master]} if item.master else {}),
+        }
+        for item in profile.experience
+        if item.id
+    ]
+
+
+def _experience_from_payload(items: list[dict], sources: dict[str, EvidenceSource]) -> list[Experience]:
+    return [
+        Experience(
+            id=item["id"],
+            organisation=item["organisation"],
+            title=item["title"],
+            description=item.get("description", ""),
+            start_date=date.fromisoformat(item["start_date"]) if item.get("start_date") else None,
+            end_date=date.fromisoformat(item["end_date"]) if item.get("end_date") else None,
+            provenance_notes=tuple(item.get("provenance_notes", ())),
+            evidence=tuple(_experience_evidence_from_payload(evidence, sources) for evidence in item.get("evidence", [])),
+            master=tuple(_experience_evidence_from_payload(unit, sources) for unit in item.get("master", [])),
+        )
+        for item in items
+    ]
 
 
 def _source_to_dict(source: EvidenceSource) -> dict[str, str | None]:

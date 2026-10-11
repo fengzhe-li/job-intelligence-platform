@@ -1,0 +1,30 @@
+<!doctype html><html><head><title>Graduate Engineer — ExampleCo</title>
+<script>
+// Synthetic SPA-style hosted form for the local human-handoff tests. Its own submit handler (like
+// a React app) prevents navigation, marks the page as submitted and sends a final mutation.
+// ?auto=1: the page itself tries to submit after every field change (an implicit submission while
+// the runner fills), first trying to release the runner's guard with a forged token.
+const q = new URLSearchParams(location.search);
+addEventListener('DOMContentLoaded', () => {
+  const form = document.querySelector('form');
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    document.body.dataset.submitted = String(Number(document.body.dataset.submitted || 0) + 1);
+    fetch('/api/non-user-graphql', {method: 'POST', headers: {'content-type': 'application/json'},
+      body: JSON.stringify({operationName: 'ApiSubmitApplication',
+                            query: 'mutation ApiSubmitApplication { submit { ok } }'})}).catch(() => null);
+  });
+  if (q.get('auto') === '1') {
+    for (const el of document.querySelectorAll('input')) el.addEventListener('change', () => {
+      const forged = window.__jobintelReleaseGuard && window.__jobintelReleaseGuard('f'.repeat(64));
+      document.body.dataset.forged = String(forged);
+      form.requestSubmit();
+    });
+  }
+});
+</script></head><body data-submitted="0"><h1>ExampleCo — Graduate Engineer</h1>
+<form action="/submit" method="post">
+  <label for="fn">First name *</label><input id="fn" required>
+  <label for="em">Email *</label><input id="em" type="email" required>
+  <button type="submit" id="final">Submit application</button>
+</form></body></html>

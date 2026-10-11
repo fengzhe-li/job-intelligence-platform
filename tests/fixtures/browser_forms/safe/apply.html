@@ -1,0 +1,13 @@
+<!doctype html><html><head><title>Graduate Engineer — ExampleCo</title></head><body>
+<h1>ExampleCo</h1><h2>Graduate Engineer</h2>
+<form action="/submit" method="post">
+  <label for="fn">First name *</label><input id="fn" name="fn" required>
+  <label for="ln">Last name *</label><input id="ln" name="ln" required>
+  <label for="em">Email *</label><input id="em" name="em" type="email" required>
+  <label for="co">Country</label><select id="co" name="co"><option value="">Select…</option><option value="uk">United Kingdom</option><option value="fr">France</option></select>
+  <fieldset><legend>Willing to travel</legend>
+    <label><input type="radio" name="travel" value="y"> Yes</label><label><input type="radio" name="travel" value="n"> No</label></fieldset>
+  <label><input type="checkbox" id="dl" name="dl"> Do you have a driving licence</label>
+  <label for="li">LinkedIn</label><input id="li" name="li">
+  <button type="submit">Submit application</button>
+</form></body></html>

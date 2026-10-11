@@ -1,0 +1,40 @@
+<!doctype html><html><head><title>Graduate Engineer — ExampleCo</title>
+<script>
+// Synthetic JS-rendered hosted form: nothing but a heading exists at "load"; the form is drawn
+// later, the way an SPA renders after its data arrives. ?mode=<case> picks the timing.
+const q = new URLSearchParams(location.search), mode = q.get('mode') || 'delayed';
+const FIRST = '<label for="fn">First name *</label><input id="fn" required>';
+const EMAIL = '<label for="em">Email *</label><input id="em" type="email" required>';
+const SUBMIT = '<button type="submit">Submit application</button>';
+const NEXT = '<button type="button" id="next">Next</button>';
+const json = (body) => ({method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(body)});
+const app = () => document.getElementById('app');
+const render = (html) => { app().innerHTML = '<form action="/submit" method="post">' + html + '</form>'; };
+const add = (html) => document.querySelector('form').insertAdjacentHTML('beforeend', html);
+const at = (ms, f) => setTimeout(f, ms);
+addEventListener('DOMContentLoaded', () => {
+  if (mode === 'delayed') at(1000, () => render(FIRST + EMAIL + SUBMIT));
+  if (mode === 'progressive') { at(200, () => render(FIRST)); at(450, () => add(EMAIL)); at(700, () => add(SUBMIT)); }
+  // mode === 'never': nothing is ever drawn.
+  if (mode === 'write') {  // an unauthorized application-host write while the form is still loading
+    at(200, () => fetch('/api/collect', json({t: 'SECRET-BODY-SENTINEL'})).catch(() => null));
+    at(4000, () => render(FIRST + EMAIL + SUBMIT));
+  }
+  if (mode === 'rum') {  // a RUM beacon while the form is still loading, then the form
+    at(200, () => fetch('https://browser-intake-datadoghq.com/api/v2/rum', json({t: 'SECRET-BODY-SENTINEL'})).catch(() => null));
+    at(1000, () => render(FIRST + EMAIL + SUBMIT));
+  }
+  if (mode === 'drift') {  // the page tries to leave the approved host before rendering
+    at(300, () => { location.href = 'https://elsewhere.example.test/apply'; });
+    at(4000, () => render(FIRST + EMAIL + SUBMIT));
+  }
+  if (mode === 'steps' || mode === 'steps_linger') {  // step 2 is drawn late after a safe Next
+    render(FIRST + NEXT);
+    document.getElementById('next').addEventListener('click', () => {
+      const step2 = () => render(EMAIL + SUBMIT);
+      if (mode === 'steps') { app().innerHTML = ''; at(1000, step2); }
+      else at(900, step2);  // step 1 stays on screen until step 2 replaces it
+    });
+  }
+});
+</script></head><body><h1>ExampleCo — Graduate Engineer</h1><div id="app"></div></body></html>

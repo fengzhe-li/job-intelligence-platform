@@ -12,6 +12,9 @@ build/
 # Local runtime state: real candidate profile (name, CV text, contact details),
 # raw scraped job snapshots, and processed rankings. Never publish this.
 data/local/
+# Ephemeral local-browser runtime (isolated Chrome profiles, session records). Never business
+# state, never backed up or copied with data/local.
+data/runtime/
 # Timestamped backups of data/local taken before data migrations -- same
 # personal data, same rule.
 data/backups/
@@ -25,3 +28,16 @@ tests/fixtures/sources/
 src/jobintel/evidence_enrichment.py
 tests/test_phase36_evidence_enrichment.py
 docs/PHASE_3_6_EVIDENCE_BANK_ENRICHMENT.md
+# The real candidate's facts (contact, address, immigration status, education, employment,
+# self-declared answers) used by the Answer Bank and question resolver -- personal data. The
+# public code ships without it and fails closed to human input (see candidate_facts.py).
+src/jobintel/submission/candidate_facts_local.py
+# Tests that assert the real candidate's facts or need the curated evidence module above.
+tests/test_authoritative_answer_bank.py
+tests/test_submission_handoff.py
+tests/test_profile_links_authoritative.py
+tests/test_internship_experience_master.py
+tests/test_internship_evidence_budget.py
+tests/test_promotion_non_destructive.py
+# One-off operator helpers bound to real request/session ids.
+scratchpad/

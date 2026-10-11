@@ -1,0 +1,6 @@
+<!doctype html><html><head><title>Graduate Engineer — ExampleCo</title></head><body>
+<h1>ExampleCo — Graduate Engineer</h1>
+<form id="f" action="/submit" method="post"><label for="em">Email</label><input id="em" name="em" type="email" required>
+<button type="submit">Submit</button></form>
+<script>document.getElementById('em').addEventListener('input', () => document.getElementById('f').requestSubmit());</script>
+</body></html>

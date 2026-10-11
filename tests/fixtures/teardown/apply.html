@@ -1,0 +1,18 @@
+<!doctype html><html><head><title>Graduate Engineer — ExampleCo</title>
+<script>
+// Synthetic page that never stops making background requests (like a busy SPA), so route
+// handlers are still in flight when the runner's caller disconnects.
+//   ?mode=beacon : unknown POST beacons -> blocked, the run stops, beacons continue after the stop
+//   ?mode=read   : an allowlisted GraphQL read, repeated before and after the run's result
+const mode = new URLSearchParams(location.search).get('mode');
+const read = JSON.stringify({operationName: 'ApiJobPosting', query: 'query ApiJobPosting { jobPosting { title } }'});
+setInterval(() => {
+  if (mode === 'beacon') for (let i = 0; i < 10; i++) fetch('/beacon', {method: 'POST', body: 'x'}).catch(() => {});
+  if (mode === 'read') fetch('/api/non-user-graphql', {method: 'POST', headers: {'content-type': 'application/json'}, body: read}).catch(() => {});
+}, 1);
+</script></head><body><h1>ExampleCo — Graduate Engineer</h1>
+<form action="/submit" method="post">
+  <label for="fn">First name *</label><input id="fn" required>
+  <label for="em">Email *</label><input id="em" type="email" required>
+  <button type="submit">Submit application</button>
+</form></body></html>

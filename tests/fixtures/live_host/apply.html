@@ -1,0 +1,17 @@
+<!doctype html><html><head><title>Graduate Engineer — ExampleCo</title></head><body><h1>ExampleCo — Graduate Engineer</h1>
+<form action="/submit" method="post">
+  <label for="fn">First name *</label><input id="fn" required>
+  <label for="em">Email *</label><input id="em" type="email" required>
+  <button type="submit">Submit application</button>
+</form>
+<script>
+// Synthetic site behaviours, chosen by ?mode=..., all triggered by the first field change.
+const mode = new URLSearchParams(location.search).get('mode');
+document.querySelectorAll('input').forEach((el) => el.addEventListener('change', () => {
+  if (mode === 'autosave') fetch('/autosave/draft', {method: 'POST', body: JSON.stringify({field: el.id})});
+  if (mode === 'collect') fetch('/collect?value=' + encodeURIComponent(el.value), {method: 'POST', body: el.value});
+  if (mode === 'offhost') location.href = 'https://sso.identity.test/login?token=SECRET-NAV-TOKEN';
+  if (mode === 'subdomain') location.href = 'https://login.jobs.example.test/apply';
+  if (mode === 'autosubmit') el.form.requestSubmit();
+}));
+</script></body></html>

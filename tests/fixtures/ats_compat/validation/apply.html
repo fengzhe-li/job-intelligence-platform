@@ -1,0 +1,10 @@
+<!doctype html><html><head><title>Graduate Engineer — ExampleCo</title></head><body><h1>ExampleCo — Graduate Engineer</h1>
+<form action="/submit" method="post">
+  <label for="fn">First name *</label><input id="fn" required>
+  <label for="em">Email *</label><input id="em" type="email" required pattern=".*@example\.com">
+  <label for="ph">Phone number *</label><input id="ph" required>
+  <button type="submit">Submit application</button>
+</form>
+<script>document.getElementById('ph').addEventListener('blur', (e) =>
+  e.target.setAttribute('aria-invalid', e.target.value.startsWith('+44') ? 'false' : 'true'));</script>
+</body></html>
