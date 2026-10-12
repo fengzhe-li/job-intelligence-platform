@@ -30,7 +30,10 @@ from jobintel.matching.project_selection import (
     select_top_projects_tailored,
 )
 from jobintel.analysis.eligibility import IneligibleJobError, evaluate_job_eligibility
+from jobintel.matching import impact_writing
+from jobintel.matching.claim_grounding import extract_tech_entities, validate_bullet_claim
 from jobintel.matching.review_gate import evaluate_review_gate
+from jobintel.matching.tailoring_skill import classify_role_archetype
 from jobintel.models.candidate import CandidateProfile, CapabilityEvidence
 from jobintel.models.cv_artifact import GeneratedCVArtifact, ProjectBullet
 from jobintel.models.eligibility import EligibilityState
@@ -158,6 +161,27 @@ class _BulletCandidate:
     original_quote: str | None = None
     # Share of this bullet's content a stronger bullet of the same project repeats.
     redundancy: float = 0.0
+    # Impact & Ownership audit record (impact_writing.BulletRewrite.to_dict()); {} when unused.
+    provenance: dict = field(default_factory=dict)
+
+
+# Default for `generate_cv(writing_policy=...)`: the shipped CV_IMPACT_OWNERSHIP_V1 policy when
+# present. Pass None for purely extractive bullets (the pre-policy behaviour).
+DEFAULT_WRITING_POLICY = object()
+# Evidence below this confidence (or tagged partial) is "partial": any rewrite of it is reviewed.
+PARTIAL_EVIDENCE_CONFIDENCE = 0.8
+
+
+@dataclass
+class _ImpactContext:
+    """Per-generation state of the Impact & Ownership layer."""
+    policy: impact_writing.ImpactPolicy
+    archetype: str
+    store_root: Path
+    experience: dict[str, tuple[Any, impact_writing.BulletRewrite]] = field(default_factory=dict)
+    summary_original: str | None = None
+    summary_removed: list[str] = field(default_factory=list)
+    summary_generic: list[str] = field(default_factory=list)
 
 
 def generate_cv(
@@ -172,15 +196,26 @@ def generate_cv(
     policy: Any | None = None,
     as_of_phase: str | None = None,
     github_freshness_state: str | None = None,
+    writing_policy: Any = DEFAULT_WRITING_POLICY,
 ) -> GeneratedCVArtifact:
     """Generate one job-specific, evidence-grounded CV artifact with a real,
     rendered-and-measured one-page PDF.
 
     Bullets are either carefully rewritten with claim-level grounding validation,
     or composed from real `CapabilityEvidence.quote` text linked via `project_id`;
-    nothing unsupported is ever promoted.
+    nothing unsupported is ever promoted. With a writing policy (default: the shipped
+    CV_IMPACT_OWNERSHIP_V1), each deterministic bullet then passes the Impact & Ownership
+    composition and Engineering Value Translation (matching.impact_writing): action-first
+    wording where the evidence proves personal execution, every rewrite re-checked by claim
+    grounding and refused (verbatim evidence kept) if it adds anything the evidence lacks.
     """
     jd = jd or extract_jd_requirements(job)
+    if writing_policy is DEFAULT_WRITING_POLICY:
+        writing_policy = impact_writing.load_default_policy()
+    impact = None
+    if writing_policy is not None:
+        impact = _ImpactContext(writing_policy, impact_writing.impact_archetype(job.title, classify_role_archetype(job), writing_policy),
+                                Path(store_root))
     # 0. Eligibility Gate: Evaluate eligibility BEFORE any project selection, bullet rewriting, or PDF rendering
     eligibility = evaluate_job_eligibility(job, candidate)
     if eligibility.state == EligibilityState.HARD_INELIGIBLE:
@@ -257,7 +292,7 @@ def generate_cv(
                     )
                 )
         else:
-            bullets = _compose_bullets_for_project(match, candidate, jd)
+            bullets = _compose_bullets_for_project(match, candidate, jd, impact)
             if accepted_rewrites:
                 any_fallback = True
 
@@ -285,7 +320,10 @@ def generate_cv(
     extra_skills = [name for name, _ in ranked_skills if name not in core_skills]
     protected_skills = {name.casefold() for name, priority in ranked_skills if priority >= 2}
     _mark_cross_project_redundancy(projects)
-    document = _assemble_document(candidate, jd, _assign_emphasis(projects), group_skills(core_skills, categories), job.description)
+    projects = _assign_emphasis(projects)
+    if impact is not None:
+        _vary_verbs(projects, impact)
+    document = _assemble_document(candidate, jd, projects, group_skills(core_skills, categories), job.description, impact)
 
     artifact_id = f"cv-{uuid.uuid4().hex[:12]}"
     pdf_path = Path(store_root) / DEFAULT_PDF_DIR / f"{artifact_id}.pdf"
@@ -298,6 +336,8 @@ def generate_cv(
     experience_statements = {
         clean_list_marker(statement.text): statement for item in candidate.experience for statement in item.evidence
     }
+    if impact is not None:  # an impact-composed internship line keeps its source statement
+        experience_statements.update({text: statement for text, (statement, _) in impact.experience.items()})
     # A variant's id plus the master units it restates: the audit trail of every internship line.
     included_experience_ids = {
         evidence_id
@@ -313,6 +353,10 @@ def generate_cv(
 
     matched_required, missing_required, partial_required = _match_required_skills(candidate, jd)
     missing_required_contact = _missing_contact_fields(candidate)
+    writing_quality: dict = {}
+    writing_reasons: list[str] = []
+    if impact is not None:
+        writing_quality, writing_reasons = _writing_quality(candidate, document, impact)
     review = evaluate_review_gate(
         jd,
         job,
@@ -325,6 +369,7 @@ def generate_cv(
         page_utilization=render_result.page_utilization,
         min_page_utilization=MIN_PAGE_UTILIZATION,
         github_freshness_state=github_freshness_state,
+        writing_review_reasons=writing_reasons,
     )
 
     return GeneratedCVArtifact(
@@ -344,6 +389,7 @@ def generate_cv(
                 status=b.status,
                 rejection_reasons=b.rejection_reasons,
                 original_quote=b.original_quote,
+                provenance=b.provenance,
             )
             for b in included_bullets
         ],
@@ -367,6 +413,8 @@ def generate_cv(
         generation_mode=generation_mode,
         project_selection_explanations=project_explanations,
         rejected_bullet_suggestions=rejected_suggestions,
+        writing_policy=impact.policy.id if impact is not None else "",
+        writing_quality=writing_quality,
     )
 
 
@@ -416,6 +464,7 @@ def generate_and_save_cv(
     policy: Any | None = None,
     as_of_phase: str | None = None,
     github_freshness_state: str | None = None,
+    writing_policy: Any = DEFAULT_WRITING_POLICY,
 ) -> GeneratedCVArtifact:
     """`generate_cv` only builds and returns the artifact (and renders the PDF
     to disk) -- it does NOT persist the artifact record itself, so every
@@ -437,6 +486,7 @@ def generate_and_save_cv(
         policy=policy,
         as_of_phase=as_of_phase,
         github_freshness_state=github_freshness_state,
+        writing_policy=writing_policy,
     )
     cv_store.save(artifact)
     return artifact
@@ -499,10 +549,13 @@ def _jd_term_overlap(text: str, jd: JDRequirements) -> float:
     return sum(0.1 for term in _jd_terms(jd) if re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", lowered))
 
 
-def _compose_bullets_for_project(match: ProjectMatch, candidate: CandidateProfile, jd: JDRequirements) -> list[_BulletCandidate]:
+def _compose_bullets_for_project(match: ProjectMatch, candidate: CandidateProfile, jd: JDRequirements,
+                                 impact: _ImpactContext | None = None) -> list[_BulletCandidate]:
     """One complete evidence quote per bullet -- never sliced, never stitched
     together with another quote. A quote that largely repeats a stronger one is
-    down-weighted so it is the first to go (or never gets space)."""
+    down-weighted so it is the first to go (or never gets space). With an impact
+    context every candidate then passes Impact & Ownership composition BEFORE the
+    per-project ceiling, so the archetype's foregrounded value decides what gets space."""
     bullets: list[_BulletCandidate] = []
     for quote in _collect_scored_quotes(match, candidate, jd):
         redundancy = max((_content_overlap(quote.text, kept.text) for kept in bullets), default=0.0)
@@ -518,8 +571,67 @@ def _compose_bullets_for_project(match: ProjectMatch, candidate: CandidateProfil
                 redundancy=redundancy,
             )
         )
+    if impact is not None:
+        bullets = _apply_impact(bullets, match.project, candidate, impact)
     bullets.sort(key=lambda bullet: -bullet.weight)
     return bullets[:MAX_BULLETS_PER_PROJECT]
+
+
+def _vary_verbs(projects: list[ProjectBlock], impact: _ImpactContext) -> None:
+    """Verb variety across the whole document, in page-priority order, BEFORE page fitting (so any
+    length change is measured on the real PDF)."""
+    ordered = [bullet for project in projects for bullet in project.bullets if bullet.provenance]
+    rewrites = [_rewrite_from(bullet.provenance) for bullet in ordered]
+    changed = {id(rewrite) for rewrite in impact_writing.vary_repeated_verbs(rewrites, impact.policy)}
+    for bullet, rewrite in zip(ordered, rewrites):
+        if id(rewrite) in changed:
+            bullet.text = rewrite.rewritten_text
+            bullet.provenance = rewrite.to_dict()
+
+
+def _evidence_by_id(candidate: CandidateProfile) -> dict[str, CapabilityEvidence]:
+    return {evidence.id: evidence for capability in candidate.capabilities.values() for evidence in capability.evidence if evidence.id}
+
+
+def _ownership_basis(evidence: list[CapabilityEvidence], policy: impact_writing.ImpactPolicy) -> str:
+    """personal_project only when EVERY cited evidence item is the candidate's own project write-up."""
+    allowed = set(policy.ownership["personal_execution_source_types"])
+    types = {str(item.source.source_type) for item in evidence}
+    if evidence and types <= allowed:
+        return "personal_project"
+    return "evidence_source_" + "+".join(sorted(types)) if types else "unknown"
+
+
+def _is_partial(evidence: list[CapabilityEvidence]) -> bool:
+    return any(item.confidence < PARTIAL_EVIDENCE_CONFIDENCE or (item.confidence_tier or "").casefold() in {"partial", "low"}
+               for item in evidence)
+
+
+def _apply_impact(bullets: list[_BulletCandidate], project, candidate: CandidateProfile, impact: _ImpactContext) -> list[_BulletCandidate]:
+    """Impact & Ownership composition + Engineering Value Translation for one project's
+    candidates. Each rewrite is re-checked by claim grounding against the bullet's OWN cited
+    evidence; a refused rewrite keeps the verbatim quote. Evidence ids never change."""
+    by_id = _evidence_by_id(candidate)
+    cited = {id(bullet): [by_id[e] for e in bullet.evidence_ids if e in by_id] for bullet in bullets}
+    bases = {_ownership_basis(cited[id(bullet)], impact.policy) for bullet in bullets}
+    result = []
+    # Composition runs per ownership basis so a value clause / first-bullet choice never mixes bases.
+    for basis in sorted(bases):
+        group = [bullet for bullet in bullets if _ownership_basis(cited[id(bullet)], impact.policy) == basis]
+        items = [impact_writing.ProjectItem(
+            bullet.text, bullet.evidence_ids, bullet.weight, _is_partial(cited[id(bullet)]),
+            lambda text, evidence=cited[id(bullet)]: validate_bullet_claim(text, project, evidence, candidate).rejection_reasons)
+            for bullet in group]
+        for entry in impact_writing.compose_project(items, project_id=project.id, ownership_basis=basis,
+                                                    archetype=impact.archetype, policy=impact.policy):
+            bullet, rewrite = group[entry.index], entry.rewrite
+            result.append(_BulletCandidate(
+                bullet.project_id, bullet.capability_names, bullet.evidence_ids, rewrite.rewritten_text, entry.weight,
+                status="impact_rewritten" if rewrite.changed else bullet.status,
+                rejection_reasons=bullet.rejection_reasons,
+                original_quote=bullet.text if rewrite.changed else bullet.original_quote,
+                redundancy=bullet.redundancy, provenance=rewrite.to_dict()))
+    return result
 
 
 _CONTENT_WORD = re.compile(r"[a-z0-9][a-z0-9+#./-]{3,}")
@@ -748,33 +860,55 @@ def _select_experience_statements(statements, jd: JDRequirements | None, jd_text
     return chosen
 
 
-def _experience_entries(candidate: CandidateProfile, jd: JDRequirements | None = None, jd_text: str = "") -> list[DatedEntry]:
+def _experience_entries(candidate: CandidateProfile, jd: JDRequirements | None = None, jd_text: str = "",
+                        impact: _ImpactContext | None = None) -> list[DatedEntry]:
     entries = []
     for item in candidate.experience:
         dates = ""
         if item.start_date:
             dates = f"{item.start_date:%b %Y} – {item.end_date:%b %Y}" if item.end_date else f"{item.start_date:%b %Y} – Present"
         if item.evidence:
-            details = [clean_list_marker(statement.text) for statement in _select_experience_statements(item.evidence, jd, jd_text)]
+            selected = _select_experience_statements(item.evidence, jd, jd_text)
+            details = [_impact_experience_line(statement, item, impact) for statement in selected]
         else:
             details = [clean_list_marker(item.description)] if item.description.strip() else []
         entries.append(DatedEntry(heading=f"{item.title}, {item.organisation}", dates=dates, details=details))
     return entries
 
 
-def _assemble_document(candidate: CandidateProfile, jd: JDRequirements, projects: list[ProjectBlock], skill_groups, jd_text: str = "") -> CVDocument:
+def _impact_experience_line(statement, experience, impact: _ImpactContext | None) -> str:
+    """An internship statement, through the ownership-preserving composition when enabled: only a
+    "Supported X by <own activities>" line may become action-first (support qualifier kept);
+    Assisted / Participated / Worked-with wording is never upgraded."""
+    text = clean_list_marker(statement.text)
+    if impact is None:
+        return text
+    rewrite = impact_writing.compose_bullet(
+        text, project_id=experience.id or experience.organisation, evidence_ids=[statement.id, *statement.grounded_in],
+        ownership_basis="experience_record", archetype=impact.archetype, policy=impact.policy)
+    impact.experience[rewrite.rewritten_text] = (statement, rewrite)
+    return rewrite.rewritten_text
+
+
+def _assemble_document(candidate: CandidateProfile, jd: JDRequirements, projects: list[ProjectBlock], skill_groups, jd_text: str = "",
+                       impact: _ImpactContext | None = None) -> CVDocument:
     """Stable core sections come from structured Education/Experience records
     when present, otherwise verbatim from the candidate's own authored CV text.
     A section neither can supply is left empty (and reported), never invented."""
     base = select_base_cv(candidate, _jd_terms(jd))
     authored = base[1] if base else None
     education = _education_entries(candidate) or (copy.deepcopy(authored.education) if authored else [])
-    experience = _experience_entries(candidate, jd, jd_text) or (copy.deepcopy(authored.experience) if authored else [])
+    experience = _experience_entries(candidate, jd, jd_text, impact) or (copy.deepcopy(authored.experience) if authored else [])
+    summary = authored.summary if authored else None
+    if impact is not None and summary:
+        impact.summary_original = summary
+        summary, impact.summary_removed, impact.summary_generic = impact_writing.narrow_summary(
+            summary, _grounded_corpus(candidate), impact.policy)
     return CVDocument(
         name=candidate.name,
         headline=authored.headline if authored else "",
         contact_line=_contact_line(candidate),
-        summary=authored.summary if authored else None,
+        summary=summary,
         education=education,
         skill_groups=skill_groups,
         projects=projects,
@@ -1160,7 +1294,54 @@ class _PageFitter:
         return f"underfill: added supported skill {skill}"
 
 
+def _grounded_corpus(candidate: CandidateProfile) -> str:
+    """All project evidence and internship statements: what a summary claim may rest on."""
+    quotes = [evidence.quote for capability in candidate.capabilities.values() for evidence in capability.evidence if evidence.project_id]
+    statements = [statement.text for item in candidate.experience for statement in (*item.evidence, *item.master)]
+    return " ".join(quotes + statements)
+
+
+def _writing_quality(candidate: CandidateProfile, document: CVDocument, impact: _ImpactContext) -> tuple[dict, list[str]]:
+    """Writing Quality Gate over the FINAL (fitted) document, plus review-gate reasons."""
+    project_text: dict[str, str] = {}
+    allowed: dict[str, set[str]] = {}
+    for capability in candidate.capabilities.values():
+        for evidence in capability.evidence:
+            if evidence.project_id:
+                project_text[evidence.project_id] = project_text.get(evidence.project_id, "") + " " + evidence.quote
+                allowed.setdefault(evidence.project_id, set()).add(capability.name.casefold())
+    projects_by_id = {project.id: project for project in candidate.projects}
+    for pid, text in project_text.items():
+        allowed[pid] |= extract_tech_entities(text)
+        if pid in projects_by_id:
+            allowed[pid] |= extract_tech_entities(projects_by_id[pid].description or "")
+    repo = {project.project_id: impact_writing.repo_readme_text(impact.store_root, getattr(projects_by_id.get(project.project_id), "repository_full_name", None))
+            for project in document.projects}
+    bullets = [b for project in document.projects for b in project.bullets]
+    rewrites = [_rewrite_from(b.provenance) for b in bullets if b.provenance]
+    experience_lines = [detail for entry in document.experience for detail in entry.details]
+    experience_rewrites = [impact.experience[line][1] for line in experience_lines if line in impact.experience]
+    report = impact_writing.writing_quality_report(
+        [(project.project_id, [(b.text, b.evidence_ids) for b in project.bullets]) for project in document.projects],
+        experience_lines, document.summary, impact.policy, project_evidence_text=project_text, project_allowed_tech=allowed,
+        repo_text=repo, rewrites=rewrites + experience_rewrites)
+    report["archetype"] = impact.archetype
+    report["experience_rewrites"] = [r.to_dict() for r in experience_rewrites]
+    report["summary"] = {"original": impact.summary_original, "rendered": document.summary,
+                         "removed_unsupported_items": impact.summary_removed, "generic_phrases": impact.summary_generic}
+    return report, impact_writing.writing_review_reasons(report, rewrites + experience_rewrites)
+
+
+def _rewrite_from(data: dict) -> impact_writing.BulletRewrite:
+    fields = {k: v for k, v in data.items() if k != "changed"}
+    return impact_writing.BulletRewrite(**fields)
+
+
 def _with_text(bullet: _BulletCandidate, text: str) -> _BulletCandidate:
+    provenance = dict(bullet.provenance)
+    if provenance:
+        provenance["rewritten_text"] = text
+        provenance["rewrite_rationale"] = [*provenance.get("rewrite_rationale", []), "page_fit:shortened_to_one_complete_sentence"]
     return _BulletCandidate(
         bullet.project_id,
         bullet.capability_names,
@@ -1171,4 +1352,5 @@ def _with_text(bullet: _BulletCandidate, text: str) -> _BulletCandidate:
         rejection_reasons=bullet.rejection_reasons,
         original_quote=bullet.original_quote or bullet.text,
         redundancy=bullet.redundancy,
+        provenance=provenance,
     )

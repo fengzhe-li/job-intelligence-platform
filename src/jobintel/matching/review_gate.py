@@ -41,6 +41,7 @@ def evaluate_review_gate(
     page_utilization: float | None = None,
     min_page_utilization: float = 0.0,
     github_freshness_state: str | None = None,
+    writing_review_reasons: list[str] | None = None,
 ) -> ReviewDecision:
     partial_required_skills = partial_required_skills or []
     missing_required_contact_fields = missing_required_contact_fields or []
@@ -88,6 +89,13 @@ def evaluate_review_gate(
 
     if page_count == 1 and page_utilization is not None and page_utilization < min_page_utilization:
         reasons.append(f"Generated CV uses only {page_utilization:.0%} of the page height -- not enough supported content to fill one page")
+        status = _escalate(status, ReviewGateStatus.REVIEW_REQUIRED)
+
+    # Better writing never bypasses evidence review: rewritten claims that change ownership wording or
+    # value framing, unsupported absolute wording, uncorroborated exact-repo claims and cross-project
+    # leakage all need a human (matching.impact_writing.writing_review_reasons).
+    if writing_review_reasons:
+        reasons.extend(writing_review_reasons)
         status = _escalate(status, ReviewGateStatus.REVIEW_REQUIRED)
 
     return ReviewDecision(status=status, reasons=reasons)

@@ -19,9 +19,12 @@ class ProjectBullet:
     capability_names: list[str]
     evidence_ids: list[str]
     text: str
-    status: str = "extractive"  # "extractive" or "gemini_rewritten"
+    status: str = "extractive"  # "extractive", "gemini_rewritten" or "impact_rewritten"
     rejection_reasons: list[str] = field(default_factory=list)
     original_quote: str | None = None
+    # Impact & Ownership audit record (source_project_id, evidence_ids, original_text, rewritten_text,
+    # action_verb, engineering_value, metric_scope, overclaim_flags, rewrite_rationale, review_required...).
+    provenance: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -79,3 +82,7 @@ class GeneratedCVArtifact:
     # Truthful freshness state of GitHub repository evidence at generation time
     # ('current', 'stale', 'not_configured', 'sync_failed', 'unverified')
     github_freshness_state: str = "not_configured"
+    # Writing policy that composed the bullets ("" = extractive only / recorded before it existed) and
+    # its Writing Quality Gate diagnostics over the final document.
+    writing_policy: str = ""
+    writing_quality: dict = field(default_factory=dict)

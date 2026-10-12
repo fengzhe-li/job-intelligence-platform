@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Sequence
 
 from jobintel.analysis.role_tracks import SKILL_PATTERNS
+from jobintel.matching import impact_writing
 from jobintel.models.candidate import CandidateProfile, CapabilityEvidence, Project
 from jobintel.profile_ingestion import SKILL_CATEGORIES
 
@@ -99,6 +100,16 @@ _TRAINING_TERMS = re.compile(
     r"\b(trained|training|fine-tun(?:ed|ing)|pre-train(?:ed|ing)|hyperparameter tuning|model weights)\b",
     re.I,
 )
+
+
+_IMPACT_POLICY: list = []
+
+
+def _impact_policy():
+    """The shipped CV_IMPACT_OWNERSHIP_V1 policy (cached), or None when it is not present."""
+    if not _IMPACT_POLICY:
+        _IMPACT_POLICY.append(impact_writing.load_default_policy())
+    return _IMPACT_POLICY[0]
 
 
 @dataclass(frozen=True)
@@ -258,6 +269,17 @@ def validate_bullet_claim(
         pattern = r"\b" + re.escape(forbidden.casefold()) + r"\b"
         if re.search(pattern, bullet_lower):
             reasons.append(f"forbidden_extrapolation:{forbidden}")
+
+    # 7b. Hard absolute / performance overclaim review (CV_IMPACT_OWNERSHIP_V1): zero-downtime,
+    # zero-loss, guaranteed, production-ready/-scale, sub-second, real-time, high-throughput,
+    # low-latency, high availability, fault-tolerant, coverage / reliability percentages, "X% faster",
+    # time saved, customer deployment, "trained an LLM", team leadership -- incl. hyphenation variants.
+    # Supported only by the cited evidence itself; measurement-class terms also need a measurement there.
+    impact_policy = _impact_policy()
+    if impact_policy is not None:
+        support = impact_writing.original_without_unmeasured(f"{all_evidence_text} {project.description or ''}", impact_policy)
+        for flag in impact_writing.review_overclaims(text, support, impact_policy):
+            reasons.append(f"unsupported_absolute_claim:{flag.split(':', 1)[1]}")
 
     # 8. CV Tailoring Skill policy validation (Phase 3.7)
     from jobintel.matching.tailoring_skill import validate_tailored_claim

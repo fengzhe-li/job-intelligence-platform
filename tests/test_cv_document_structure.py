@@ -213,7 +213,8 @@ class CVDocumentStructureTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_graduate_cv_contains_every_core_section_on_exactly_one_pdf_page(self) -> None:
-        artifact = generate_cv(_candidate(), _job(), store_root=self.tmp)
+        # Extractive generation: no rewritten claim, so nothing for the writing review to flag.
+        artifact = generate_cv(_candidate(), _job(), store_root=self.tmp, writing_policy=None)
         page_count, text = _pdf_text(artifact.pdf_path)
 
         self.assertEqual(page_count, 1)
@@ -252,8 +253,10 @@ class CVDocumentStructureTests(unittest.TestCase):
             for technology in project["technologies"]:
                 self.assertIn(technology.casefold(), candidate.capabilities)
         for bullet in artifact.bullets:
-            # Complete evidence text: the whole quote, or a whole sentence of it.
-            source = next((quote for quote in quotes if bullet.text in quote), None)
+            # Complete evidence text: the whole quote, or a whole sentence of it -- for an Impact &
+            # Ownership composition, of its recorded verbatim source.
+            verbatim = bullet.provenance.get("original_text") or bullet.text
+            source = next((quote for quote in quotes if verbatim in quote), None)
             self.assertIsNotNone(source, f"bullet not verbatim evidence: {bullet.text!r}")
             self.assertTrue(bullet.text == source or bullet.text.endswith("."), f"bullet cut mid-phrase: {bullet.text!r}")
 
@@ -262,7 +265,7 @@ class CVDocumentStructureTests(unittest.TestCase):
         texts = [bullet.text for bullet in artifact.bullets]
 
         self.assertIn(
-            "PostgreSQL persistence on SQLAlchemy v2.0 models with Alembic migrations, e.g. schema changes for orders and audit history tables.",
+            "Implemented PostgreSQL persistence on SQLAlchemy v2.0 models with Alembic migrations, e.g. schema changes for orders and audit history tables.",
             texts,
         )
 
@@ -275,7 +278,10 @@ class CVDocumentStructureTests(unittest.TestCase):
         }
         artifact = generate_cv(_candidate(projects=projects), _job(), store_root=self.tmp)
 
-        self.assertEqual([bullet.text for bullet in artifact.bullets], ["FastAPI backend providing REST endpoints for orders and fulfilment tracking."])
+        self.assertEqual([bullet.provenance["original_text"] for bullet in artifact.bullets],
+                         ["FastAPI backend providing REST endpoints for orders and fulfilment tracking."])
+        self.assertEqual([bullet.text for bullet in artifact.bullets],
+                         ["Built a FastAPI backend providing REST endpoints for orders and fulfilment tracking."])
 
     def _dense(self):
         candidate = _candidate(projects={**PROJECT_EVIDENCE, **EXTRA_PROJECTS})
@@ -288,7 +294,7 @@ class CVDocumentStructureTests(unittest.TestCase):
         self.assertTrue(any(action.startswith("overflow:") for action in artifact.fit_actions))
         self.assertLess(len(artifact.bullets), len(quotes))
         for bullet in artifact.bullets:
-            self.assertTrue(any(bullet.text in quote for quote in quotes))
+            self.assertTrue(any((bullet.provenance.get("original_text") or bullet.text) in quote for quote in quotes))
             self.assertFalse(bullet.text.endswith(("…", "...")))
 
     def test_focus_projects_can_retain_more_bullets_than_secondary_projects(self) -> None:
@@ -351,9 +357,10 @@ class CVDocumentStructureTests(unittest.TestCase):
         artifact = generate_cv(candidate, _job(), store_root=self.tmp)
         quotes = _source_quotes(candidate)
 
-        self.assertEqual([bullet.text for bullet in artifact.bullets], [PROJECT_EVIDENCE["proj-api"][1][0][1]])
+        self.assertEqual([bullet.provenance.get("original_text") or bullet.text for bullet in artifact.bullets],
+                         [PROJECT_EVIDENCE["proj-api"][1][0][1]])
         for bullet in artifact.bullets:
-            self.assertIn(bullet.text, quotes)
+            self.assertIn(bullet.provenance.get("original_text") or bullet.text, quotes)
         # The page stays honestly under-filled and is flagged, not padded.
         self.assertLess(artifact.page_utilization, MIN_PAGE_UTILIZATION)
         self.assertNotEqual(artifact.review_status, ReviewGateStatus.AUTO_PREPARE)

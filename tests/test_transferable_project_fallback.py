@@ -171,9 +171,11 @@ class TestTransferableFallback:
             assert not [name for name in artifact.skills_included if java.search(name)]
             assert not [bullet.text for bullet in artifact.bullets if java.search(bullet.text)]
             assert not java.search(artifact.cv_text)
-            # Every bullet is a verbatim quote of this project's own evidence.
+            # Every bullet is a verbatim quote of this project's own evidence, or the Impact &
+            # Ownership composition of one (its verbatim source kept in the provenance).
             quotes = {quote for _, _, quote in TESTED_SERVICE}
-            assert artifact.bullets and all(bullet.text in quotes for bullet in artifact.bullets)
+            assert artifact.bullets and all((bullet.provenance.get("original_text") or bullet.text) in quotes
+                                            for bullet in artifact.bullets)
             # The unsupported must-have is still reported, and still blocks auto-submission.
             assert any("Java" in reason and "must-have" in reason for reason in artifact.review_reasons)
             assert artifact.review_status == ReviewGateStatus.BLOCK_AUTO_SUBMISSION

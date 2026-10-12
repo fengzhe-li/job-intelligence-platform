@@ -298,7 +298,8 @@ def test_cv_generation_deterministic_fallback_when_gemini_fails(tmp_path):
     artifact = generate_cv(cand, job, store_root=tmp_path, hybrid_result=fake_hybrid, intelligence_service=mock_service)
     assert artifact.generation_mode == "deterministic"
     assert len(artifact.bullets) > 0
-    assert all(b.status == "extractive" for b in artifact.bullets)
+    # Deterministic: verbatim evidence, or its Impact & Ownership composition -- never a model rewrite.
+    assert all(b.status in {"extractive", "impact_rewritten"} for b in artifact.bullets)
     assert artifact.fits_one_page
 
 
@@ -318,7 +319,8 @@ def test_cv_generation_rejected_bullet_falls_back_to_extractive(tmp_path):
     # The artifact records the rejected suggestion in provenance and falls back to extractive bullets
     assert len(artifact.rejected_bullet_suggestions) == 1
     assert artifact.rejected_bullet_suggestions[0]["text"] == "Invented 50% speedup"
-    assert all(b.status == "extractive" for b in artifact.bullets)
+    assert all(b.status in {"extractive", "impact_rewritten"} for b in artifact.bullets)
+    assert "50%" not in artifact.cv_text
 
 
 def test_cv_generation_accepted_rewrite_used_with_provenance(tmp_path):

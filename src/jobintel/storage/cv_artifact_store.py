@@ -91,4 +91,6 @@ def _from_dict(payload: dict[str, Any]) -> GeneratedCVArtifact:
         document_format=payload.get("document_format", 2 if payload.get("document") else 1),
         layout_preset=payload.get("layout_preset", ""),
         github_freshness_state=payload.get("github_freshness_state", "not_configured"),
+        writing_policy=payload.get("writing_policy", ""),
+        writing_quality=payload.get("writing_quality", {}),
     )

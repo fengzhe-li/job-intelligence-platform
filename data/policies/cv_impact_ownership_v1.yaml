@@ -1,0 +1,382 @@
+schema_version: '1.0'
+source_asset: data/policies/sources/cv_impact_ownership_v1_source.md
+source_hash: 748da97ae38dd5128393d7f016592ba472e85261d7d600b031f5b84b7ae8d5fd
+transformation_version: '1.0'
+CV_IMPACT_OWNERSHIP_V1:
+  extends: CV_TAILORING_SKILL_V1
+  objective: >-
+    Make verified evidence read as action + owned artifact / mechanism + supportable engineering
+    value, without ever creating stronger evidence through wording.
+  precedence:
+  - evidence_truth
+  - jd_relevance
+  - evidence_strength
+  - recruiter_clarity
+  - non_redundancy
+  - one_page_readability
+
+  ownership:
+    # Evidence from the candidate's own repositories / project write-ups supports personal
+    # execution verbs. Anything else (CV text, experience records) keeps its own wording unless a
+    # rule below converts it without changing who did what.
+    personal_execution_source_types:
+    - readme_markdown
+    - github_readme_export
+    - github_repository_sync
+    - manual_project_description
+    action_verbs: [Built, Designed, Implemented, Developed, Automated, Integrated, Validated,
+                   Benchmarked, Diagnosed, Delivered, Refactored, Hardened, Tested, Prepared,
+                   Investigated, Defined, Packaged, Reconciled]
+    # Never inserted by the composer; flagged when they appear without responsibility evidence.
+    escalation_verbs: [Architected, Led, Spearheaded, Owned, Orchestrated, Directed, Managed,
+                       Headed, Oversaw, Supervised]
+    # Truthful collaborative / supporting openers: never upgraded to an ownership verb.
+    collaborative_verbs: [Assisted, Supported, Participated, Helped, Contributed, Collaborated,
+                          Worked]
+    # Other past-tense openers that already are action-first.
+    other_past_verbs: [Used, Queried, Troubleshot, Checked, Maintained, Wrote, Created, Configured,
+                       Monitored, Analysed, Analyzed, Reviewed, Gained, Visualised, Visualized,
+                       Applied, Ran, Measured, Evaluated, Trained, Extracted, Cleaned, Documented,
+                       Identified, Processed]
+    # Irregular past-tense openers: always treated as a verb opening (never rewritten).
+    irregular_past_verbs: [Set, Wrote, Ran, Made, Took, Kept, Put, Found, Drove, Gave, Began, Rebuilt,
+                           Taught, Brought, Sent, Won, Held, Met, Shipped, Read, Fed, Got, Grew, Sped,
+                           Spun, Split, Cut, Rewrote]
+    # "-ed" words that commonly open a noun fragment as an adjective; any OTHER "-ed" opener is
+    # treated as a verb and left as written (ambiguous openers are never rewritten).
+    adjectival_participles: [embedded, distributed, structured, containerised, containerized, cited,
+                             automated, layered, unified, guided, simulated, synthesised, synthesized,
+                             versioned, typed, managed, curated, frozen, nested, mixed, shared, licensed]
+    # "Built around X, Y and Z" describes a system's stack, not an action: an inventory.
+    inventory_openers: ['built around', 'based on', 'powered by', 'built on']
+
+  composition:
+    # Noun-fragment opening -> "<Verb> <article> <noun phrase><verbatim remainder>". The verb comes
+    # from the fragment's head noun; nothing after the noun phrase is reworded.
+    head_noun_verbs:
+      Built: [backend, service, api, application, app, platform, system, framework, prototype,
+              setup, testbed, harness, simulator, dashboard, website, server, stack, cli, tool,
+              pipeline, workflow]
+      Developed: [utilities, utility, scripts, script, drivers, driver, library, module, modules,
+                  tools, components, functions, frontend, interface, package, client]
+      Implemented: [algorithm, algorithms, persistence, ingestion, retrieval, protocol, logic,
+                    firmware, mechanism, cache, parser, scheduler, classifier, model, engine, core]
+      Defined: [schemas, schema, contracts, contract]
+      Designed: [design, architecture]
+    # Verbs that describe the same act of making an artifact; when one opens more than
+    # quality_gate.max_verb_repeats lines, later inserted occurrences rotate through the others.
+    interchangeable_verbs: [Built, Developed, Implemented]
+    mass_nouns: [persistence, ingestion, retrieval, firmware, logic, middleware, tooling,
+                 infrastructure, design, architecture]
+    plural_nouns: [utilities, scripts, drivers, schemas, contracts, algorithms, modules, tools,
+                   components, functions]
+    # Tokens that end the opening noun phrase.
+    boundary_tokens: [that, which, with, for, from, to, using, via, by, in, 'on', across, serving,
+                      providing, packaged, implemented, developed, built, designed, written,
+                      including, where]
+    passive_participles: [implemented, developed, built, designed, written, created]
+    max_head_position: 9
+    # Technology words that are generic nouns, not names: lower-cased when they open a noun phrase.
+    generic_lowercase_terms: [retrieval, rest, serverless, microservices, embeddings, retrieval,
+                              llms, rag, arm, vector search]
+    # Opening adjectives removed when the same evidence contains no measurement of the property
+    # (narrowing only: never added).
+    unmeasured_opening_adjectives: [high-throughput, high throughput, high-performance,
+                                    high performance, low-latency, low latency, real-time,
+                                    real time, ultra-fast, scalable, production-grade,
+                                    enterprise-grade, comprehensive, robust, state-of-the-art,
+                                    cutting-edge]
+    measurement_pattern: '\b\d+(?:\.\d+)?\s*(?:ms|µs|us|s|sec|seconds|minutes|rps|req/s|events/s|msg/s|mb/s|gb/s|kb/s|ops/s|qps|tps|hz|khz|mhz|%)(?![a-z])'
+    # "Supported <object> by <gerund> ..." -> "<Past> ..., in support of <object>." keeps the
+    # support qualifier; an unknown gerund refuses the conversion.
+    support_by_pattern: '^(?P<opener>Supported|Assisted with) (?P<object>[^,;:]{3,60}?) by (?P<acts>[a-z].+?)\.?$'
+    gerund_past:
+      checking: checked
+      identifying: identified
+      documenting: documented
+      investigating: investigated
+      reviewing: reviewed
+      testing: tested
+      preparing: prepared
+      validating: validated
+      assisting: assisted
+      troubleshooting: troubleshot
+      configuring: configured
+      monitoring: monitored
+      annotating: annotated
+      cleaning: cleaned
+      querying: queried
+      analysing: analysed
+      analyzing: analyzed
+      recording: recorded
+      reporting: reported
+      tracking: tracked
+      updating: updated
+      maintaining: maintained
+    # Openers that say what was built or delivered (first-bullet ownership clarity).
+    delivery_verbs: [Built, Implemented, Developed, Designed, Defined, Delivered, Integrated, Automated,
+                     Packaged]
+    max_rendered_chars: 215
+    max_value_clauses_per_project: 1
+    # A noun-fragment / inventory bullet that could not be made action-first loses this share of
+    # its selection weight (it stays eligible; stronger bullets simply go first).
+    unconverted_fragment_factor: 0.92
+    # Archetype-foregrounded value: weight x (1 + boost per matching tag), capped.
+    foreground_boost_per_tag: 0.08
+    foreground_boost_cap: 0.24
+    # The project's first bullet is promoted to an action-first delivery bullet when one exists
+    # within this share of the top bullet's weight.
+    first_bullet_promotion_share: 0.8
+
+  value_ladder:
+    L1: measured_business_outcome     # needs baseline + attribution + scope + measurement
+    L2: measured_engineering_outcome  # measured and scoped
+    L3: verified_engineering_delivery
+    L4: concrete_contribution
+    # No rule below produces L1: the Evidence Bank carries no attributed business measurement.
+
+  value_translations:
+  # Each rule fires only on its own bullet's evidence text. 'requires' must all match; 'render'
+  # (optional) is the only text ever appended, and only when its 'signal' is not already present.
+  - id: regression_validation
+    requires: ['\b(?:ci|github actions|continuous integration)\b', '\btests?\b']
+    value: repeatable regression validation
+    level: L3
+    tags: [testing, correctness, reproducibility, delivery]
+    render: ', giving repeatable regression checks'
+    signal: '\bregression\b'
+  - id: database_interaction_validation
+    requires: ['\b(?:postgresql|database|dynamodb|sql)\b[^.]*\bintegration tests?\b|\bintegration tests?\b[^.]*\b(?:postgresql|database|dynamodb)\b']
+    value: validated persistence / database interactions
+    level: L3
+    tags: [persistence, testing, correctness]
+  - id: duplicate_safe_processing
+    requires: ['\b(?:deduplicat\w*|duplicate detection|idempoten\w*)\b']
+    value: duplicate-safe processing / data-consistency protection
+    level: L3
+    tags: [correctness, reliability_mechanism, persistence, integration]
+  - id: out_of_order_protection
+    requires: ['\b(?:timestamp[- ]guard\w*|out-of-order|out of order)\b']
+    value: protection against stale or out-of-order state updates
+    level: L3
+    tags: [correctness, reliability_mechanism, state_handling]
+    render: ', protecting stored state from out-of-order updates'
+    signal: '\b(?:stale|out-of-order|out of order)\b'
+  - id: evidence_traceability
+    # Rendered only where the same evidence binds sources to GENERATED text.
+    requires: ['\b(?:citations?|cited|source binding|binds? verbatim)\b', '\bgenerat\w*\b']
+    value: auditability / evidence traceability
+    level: L3
+    tags: [source_grounding, data_contracts, correctness]
+    render: ', keeping generated text traceable to its sources'
+    signal: '\btraceab\w*\b'
+  - id: data_lineage
+    requires: ['\b(?:provenance|lineage|cited|citations?)\b']
+    value: data lineage / traceability
+    level: L3
+    tags: [source_grounding, correctness, data_pipeline]
+  - id: contract_validation
+    requires: ['\b(?:pydantic|strict schemas?|schema validation|request validation)\b']
+    value: contract validation / structured failure handling
+    level: L3
+    tags: [data_contracts, failure_handling, correctness, api]
+    render: ', enforcing explicit data contracts'
+    signal: '\bcontracts?\b'
+  - id: structured_failure_handling
+    requires: ['\b(?:structured error|error responses?|error status codes?|fail-closed|fails? closed)\b']
+    value: structured failure handling
+    level: L3
+    tags: [failure_handling, api, correctness]
+  - id: api_delivery
+    requires: ['\b(?:rest api|rest endpoints?|endpoints?|api gateway|fastapi)\b']
+    value: delivered API / system integration
+    level: L3
+    tags: [api, integration, delivery]
+  - id: reproducible_packaging
+    requires: ['\b(?:docker\w*|containeri[sz]ed|docker compose)\b']
+    value: reproducible runtime packaging
+    level: L3
+    tags: [reproducibility, packaging, delivery]
+  - id: migration_validation
+    requires: ['\b(?:criu|checkpoint|restore)\b', '\b\d+/\d+\b']
+    value: reproducible, bounded migration validation
+    level: L2
+    tags: [state_handling, reliability_mechanism, reproducibility, linux]
+  - id: network_state_handling
+    requires: ['\b(?:tcp|socket|arp|vip)\b']
+    value: network/session state handling
+    level: L3
+    tags: [networking, linux, state_handling]
+  - id: hardware_integration
+    # Hardware-interface evidence only: a cloud function that stores "sensor state" is not integration.
+    requires: ['\b(?:i2c|spi|uart|firmware|microcontrollers?|peripherals?|gpio|adc|sensor (?:drivers?|interfac\w*|registers?))\b']
+    value: software/hardware integration
+    level: L3
+    tags: [hardware_integration, embedded, validation]
+  - id: deterministic_measurement
+    requires: ['\b(?:threshold|acceleration|hardware timers?|interrupt\w*|sampling rate)\b']
+    value: deterministic control / measurement logic
+    level: L3
+    tags: [embedded, deterministic_control, validation]
+  - id: integration_pipeline
+    requires: ['\b(?:mqtt|iot core|lambda|fan out|publish\w*|ingestion)\b']
+    value: end-to-end system integration
+    level: L3
+    tags: [integration, delivery, data_pipeline]
+  - id: user_interface_delivery
+    requires: ['\b(?:react|frontend|ui components?|interface)\b']
+    value: delivered user-facing interface
+    level: L3
+    tags: [frontend, delivery, end_to_end]
+  - id: reproducible_experiment
+    requires: ['\b(?:reproducib\w*|frozen|leakage guard|patient-independent|point-in-time)\b']
+    value: reproducible, leakage-guarded evaluation
+    level: L3
+    tags: [validation, reproducibility, correctness]
+  - id: reduced_manual_processing
+    # Only where the evidence itself states the reduction.
+    requires: ['\breduc\w* (?:repetitive )?manual (?:work|effort|processing)\b']
+    value: reduced repetitive manual processing
+    level: L4
+    tags: [automation, data_validation]
+  - id: data_validation
+    requires: ['\b(?:validat\w*|data cleaning|data quality|consistency checks?)\b']
+    value: data validation
+    level: L4
+    tags: [data_validation, correctness, validation]
+  - id: diagnosis_support
+    requires: ['\b(?:troubleshoot\w*|investigat\w*|diagnos\w*|debug\w*)\b']
+    value: diagnosis and resolution support
+    level: L4
+    tags: [debugging, failure_diagnosis]
+
+  # The JD archetype decides which verified value is foregrounded, never the truth.
+  archetypes:
+    forward_deployed_ai:
+      title_terms: [forward deployed, forward-deployed, solutions engineer, solutions architect,
+                    customer engineer, deployment engineer, field engineer, fde]
+      foreground: [api, integration, source_grounding, data_contracts, failure_handling, delivery,
+                   debugging]
+      guardrail: Do not invent customer delivery or client ownership.
+    automation_embedded:
+      title_terms: [automation, embedded, firmware, controls, mechatronics, robotics, automotive,
+                    hardware, test engineer, instrumentation]
+      foreground: [hardware_integration, embedded, validation, deterministic_control, debugging,
+                   automation, data_validation]
+      guardrail: Do not infer PLC, industrial robotics or road-tested autonomy.
+    platform_systems:
+      from_tailoring: [platform_cloud_systems]
+      foreground: [linux, networking, reproducibility, failure_diagnosis, state_handling,
+                   reliability_mechanism, packaging]
+      guardrail: Do not infer SRE, on-call or high availability.
+    fullstack:
+      from_tailoring: [fullstack]
+      foreground: [end_to_end, frontend, api, persistence, testing, delivery]
+    ai_applied:
+      from_tailoring: [ai_applied_ai]
+      foreground: [source_grounding, data_contracts, failure_handling, validation, api]
+      guardrail: Model/API presence alone is not the achievement.
+    backend:
+      from_tailoring: [backend_general_swe, fintech, motorsport]
+      foreground: [api, data_contracts, correctness, persistence, failure_handling, testing,
+                   packaging]
+
+  metrics:
+    # Ordered: the first matching rule classifies a span. Every metric keeps its verbatim text.
+    rules:
+    - type: bounded_trials
+      pattern: '\b(?P<value>\d+)/(?P<denominator>\d+)\s+(?:final\s+|strict\s+)?(?:trials?|runs?|validation)\b'
+      scope: bounded validation trials
+      context: experiment
+      not: [availability, uptime, zero downtime, success rate in production]
+    - type: test_count
+      pattern: '\b(?P<value>\d[\d,]*)\s+(?:(?:real|passing|backend|frontend|unit|integration|automated|end-to-end|e2e|[a-z]+-emulator|postgresql|dynamodb)\s+){0,3}tests?\b'
+      scope: tests in the project's own suite
+      context: test_suite
+      not: [coverage, end-to-end tests, reliability percentage]
+    - type: simulator_dataset
+      pattern: '\b(?P<value>\d[\d,]*)\s+(?:\w+\s+)?simulat\w*\s+(?:trials?|runs?|episodes?)\b'
+      scope: simulator dataset
+      context: simulation
+      not: [road trials, real-world deployment]
+    - type: evaluation_sample
+      pattern: '\b(?P<value>\d[\d,]*)(?:-task)?\s+(?:\w+\s+){0,2}(?:evaluation|benchmark)\s*(?:cases?|tasks?|subset|samples?)?\b|\b(?P<value2>\d+)-task\b'
+      scope: evaluation sample
+      context: evaluation
+      not: [customer adoption, production usage]
+    - type: percentage
+      pattern: '(?P<value>\d+(?:\.\d+)?)\s?%'
+      scope: as stated by its source sentence
+      context: as_stated
+      not: [a different denominator]
+    - type: dimension
+      pattern: '\b(?P<value>\d+)\s*[x×]\s*(?P<denominator>\d+)(?:\s*[x×]\s*\d+)?\b'
+      scope: data shape
+      context: specification
+      not: [performance]
+    - type: dataset_scope
+      pattern: '\b(?P<value>\d[\d,]*)\s+(?:race\s+)?(?:laps?|records?|rows?|documents?|files?|samples?|cases?|filings?)\b'
+      scope: dataset size as stated
+      context: dataset
+      not: [production volume]
+    - type: count
+      pattern: '\b(?P<value>\d[\d,]*(?:\.\d+)?)\b'
+      scope: count as stated
+      context: as_stated
+      not: []
+    # Words whose loss materially strengthens a claim: a rewrite must keep every one it inherited.
+    qualifier_terms: [synthetic, simulator, simulated, emulator, locally, local, bounded, final,
+                      strict, subset, prototype, hypothetical, partial, frozen, isolated, trials,
+                      experiment, offline, sample, assisted, supported, participated, helped,
+                      in support of, with colleagues, two-person]
+
+  overclaims:
+    # Reported for every bullet and the summary; supported only when the bullet's OWN evidence
+    # states it (measurement-class terms need a measurement in that evidence too).
+    measurement_required: [high-throughput, low-latency, sub-second, real-time, high-performance,
+                           ultra-fast, x-percent-faster]
+    terms:
+      zero-downtime: 'zero[- ]?down[- ]?time'
+      zero-loss: 'zero[- ](?:packet[- ]|data[- ])?loss|lossless'
+      zero-regression: 'zero[- ]regressions?'
+      zero-hallucination: 'zero[- ]hallucinations?|no hallucinations|eliminat\w* (?:all )?hallucinations?'
+      guaranteed: 'guarantee[ds]?(?: consistency)?'
+      production-ready: 'production[- ]ready'
+      production-scale: 'production[- ](?:scale|grade)|at scale\b|enterprise[- ]scale'
+      sub-second: 'sub[- ]?second'
+      real-time: 'real[- ]time'
+      high-throughput: 'high[- ]throughput'
+      low-latency: '(?:ultra[- ])?low[- ]latency'
+      high-performance: 'high[- ]performance'
+      high-availability: 'high(?:ly)?[- ]availab\w*'
+      fault-tolerant: 'fault[- ]toleran\w*'
+      coverage-percentage: '\d+(?:\.\d+)?\s?%\+?\s+(?:test\s+|code\s+)?coverage|coverage of \d+'
+      reliability-percentage: '\d+(?:\.\d+)?\s?%\s+(?:reliab\w*|uptime|availab\w*|success)'
+      x-percent-faster: '\d+(?:\.\d+)?\s?%\s+(?:faster|quicker|speed[- ]?up)|\d+(?:\.\d+)?x\s+faster'
+      time-saved: '\d+(?:\.\d+)?\s*(?:hours?|hrs?|days?|minutes?)(?:\s*(?:/|per|a|each)\s*(?:week|month|day|year))?\s+saved|sav\w*\s+\d+(?:\.\d+)?\s*(?:hours?|hrs?|days?)'
+      customer-deployment: 'customer[- ](?:deploy\w*|facing delivery|delivery|adoption)|deployed (?:to|for|at) (?:customers?|clients?)|client[- ]facing'
+      trained-llm: 'trained (?:an? |its own |our own )?(?:llm|large language model|foundation model)'
+      team-leadership: '(?:led|owned|managed|headed|ran) (?:a |the |an )?(?:\w+[- ])?team'
+      production-deployment: 'deployed (?:to|in|into) production|in production\b|production deployment'
+
+  summary:
+    # Enumeration items in the authored summary that make an unsupported scope/performance claim
+    # are dropped (narrowing only); generic phrasing is reported, never reworded.
+    unsupported_scope_items: ['distributed systems?', 'microservices?', 'large[- ]scale', 'high[- ]throughput',
+                              'low[- ]latency', 'real[- ]time', 'production[- ]grade', 'enterprise']
+    generic_phrases: ['ai[- ]powered', 'cutting[- ]edge', 'state[- ]of[- ]the[- ]art', 'passionate',
+                      'results[- ]driven', 'innovative']
+
+  quality_gate:
+    generic_value_language: ['improv\w* (?:the )?reliability', 'enhanc\w* efficiency', 'ensur\w* quality',
+                             'improv\w* efficiency', 'improv\w* performance', 'boost\w* productivity',
+                             'streamlin\w*', 'improv\w* (?:the )?consistency']
+    # A generic phrase is supported when the same bullet names a concrete mechanism.
+    mechanism_terms: ['scripts?', 'tests?', 'validation', 'schemas?', 'checks?', 'automat\w*', 'pipeline',
+                      'dedup\w*', 'retry', 'guard\w*', 'ci\b', 'docker', 'sql', 'pandas']
+    max_verb_repeats: 3
+    repeated_ngram: 4
+    # Claims to corroborate against the project's own cached repository README when present.
+    corroboration_terms: ['async', 'worker', 'pydantic v2', 'immutable', 'offsets?', 'deploy\w*',
+                          'keras', '\brag\b', 'citations?', 'qdrant', 'kubernetes', 'kafka', 'polars',
+                          'throughput']
