@@ -11,6 +11,7 @@ CV upload mode, event names, CLI) stay in the executor's own module.
 """
 from pathlib import Path
 import re
+import unicodedata
 from urllib.parse import urlsplit
 
 from jobintel.models.submission import ApprovedSubmissionPackage, ExecutionResult, ReceiptEvidence
@@ -25,14 +26,20 @@ LABELS = {
     "legal_last_name": {"last name", "legal last name", "family name", "surname"},
     "legal_full_name": {"name", "full name", "legal full name"},
     "email": {"email", "email address", "contact email"},
-    "phone": {"phone", "phone number", "telephone", "mobile"},
-    "phone_uk": {"phone", "phone number", "telephone", "mobile", "uk phone"},
+    "phone": {"phone", "phone number", "telephone", "mobile", "mobile number"},
+    "phone_uk": {"phone", "phone number", "telephone", "mobile", "mobile number", "uk phone"},
     "location": {"location", "current location", "where are you currently based", "where are you currently located",
-                 "where are you based", "where are you located"},
-    "city": {"city", "town"},
+                 "where are you based", "where are you located", "where do you currently live", "where do you live",
+                 # a city-level location picker whose options are "<city>, <region>, <country>" (hosted job boards)
+                 "location (city)", "please can you confirm your current location", "please confirm your current location",
+                 "can you confirm your current location", "what is your current location"},
+    "city": {"city", "town", "current city", "city of residence", "which city are you based in",
+             "which city are you currently based in"},
     "address_line_1": {"address line 1", "street address"},
     "postcode": {"postcode", "postal code", "zip code"},
-    "country": {"country"},
+    "country": {"country", "country of residence", "current country", "country of current residence",
+                "current country of residence", "country where you currently reside",
+                "country you're currently residing in", "country you are currently residing in"},
     "address": {"address", "current address", "street address", "full address", "full current address"},
     "full_address": {"address", "current address", "street address", "full address", "full current address"},
     "nationality": {"nationality", "country of nationality"},
@@ -95,14 +102,21 @@ LABELS = {
     "secondary_school_dates": {"secondary school dates", "high school dates"},
     "gaokao_score": {"gaokao", "gaokao score"},
     # Employment
-    "employment_1_organisation": {"recent employer", "previous employer 1"},
-    "employment_1_title": {"recent job title", "internship title"},
+    "employment_1_organisation": {"recent employer", "previous employer 1", "current employer", "current company",
+                                  "current or previous employer", "who is your current or previous employer",
+                                  "current or most recent employer"},
+    "employment_1_title": {"recent job title", "internship title", "current job title", "current title",
+                           "current or previous job title", "what is your current or previous job title"},
     "employment_1_dates": {"recent employment dates", "internship dates"},
     "employment_1_country": {"employment 1 country"},
     "employment_2_organisation": {"previous employer 2"},
     "employment_2_title": {"internship 2 title"},
     "employment_2_dates": {"employment 2 dates"},
     "employment_2_country": {"employment 2 country"},
+    "employment_3_organisation": {"previous employer 3"},
+    "employment_3_title": {"internship 3 title"},
+    "employment_3_dates": {"employment 3 dates"},
+    "employment_3_country": {"employment 3 country"},
     # Declarations
     "criminal_convictions": {"criminal convictions", "any criminal convictions"},
     "security_clearance_held": {"security clearance held", "currently hold security clearance"},
@@ -113,24 +127,49 @@ LABELS = {
     "diversity_sexual_orientation": {"sexual orientation"},
     "diversity_gender_identity": {"gender identity"},
 }
+# Named-profile link labels beyond the exact LABELS entries: punctuation and case are ignored, a polite
+# lead-in ("Link to your", "Your", "Please provide", "URL for", ...) is stripped, and what remains must
+# be exactly ONE named profile with an optional "profile" / "url" / "link" suffix. The field is the
+# named profile's own URL only; two names ("LinkedIn or GitHub") or none ("Profile URL") never match.
+_PROFILE_BRANDS = {"github": "github_url", "linkedin": "linkedin_url"}
+_PROFILE_LEAD_IN = re.compile(r"^(?:please (?:provide|enter|share|add|include)|provide|enter|share|add|include"
+                              r"|(?:a |the )?(?:link|url) (?:to|for)|your|a|the)\s+")
+_PROFILE_REST = re.compile(r"(?P<brand>github|linkedin)(?: profile)?(?: (?:url|link|page|address))?")
+
+
+def profile_link_field(page_label):
+    """"github_url" / "linkedin_url" for a label naming exactly that one profile, else None."""
+    text = " ".join(re.sub(r"[^0-9a-z]+", " ", normalise_question(page_label)).split())
+    previous = None
+    while text != previous:
+        previous, text = text, _PROFILE_LEAD_IN.sub("", text, count=1)
+    match = _PROFILE_REST.fullmatch(text)
+    return _PROFILE_BRANDS[match["brand"]] if match else None
+
+
 # A label that asks for a link but is not an exact LABELS entry (e.g. "Profile URL", "LinkedIn or
 # GitHub", "Social media") is ambiguous: a human decides, nothing is substituted.
 PROFILE_LINK_TERMS = ("linkedin", "github", "website", "web site", "portfolio", "url", "profile link",
-                      "online profile", "social media", "homepage")
+                      "online profile", "social media", "social profile", "professional profile", "homepage")
 # Substring match on the casefolded label; any hit forces human input.
 SENSITIVE = ("sponsor", "right to work", "work permit", "visa", "immigration", "nationality", "citizenship",
+             "leave to remain", "settled status", "permitted to work", "eligible to work", "eligibility to work",
+             "work eligibility", "authorised to work", "authorized to work", "work authoris", "work authoriz",
+             "entitled to work", "allowed to work", "legally work",
              "clearance", "salary", "compensation", "notice period", "relocat", "criminal", "conviction",
              "compliance", "disab", "adjustment", "accommodation", "conflict of interest", "cover letter",
              "motivation", "why do you", "why are you", "free text", "gender", "ethnic", "religio",
              "sexual orientation")
+_APOSTROPHES = str.maketrans({"\u2019": "'", "\u2018": "'"})
 _UK = r"(?:the )?(?:uk|united kingdom)"
 _VISA = r"(?:visa |employment visa |work visa |immigration |employer )?"
 _WITHOUT_SPONSORSHIP = r"without (?:the need for |requiring |needing )?(?:any )?" + _VISA + r"sponsorship"
 # Work-authorisation questions whose wording is unambiguous, and the ONE canonical field each asks
-# for. Matched against the whole normalised question (see normalise_question); only these bypass
-# the SENSITIVE escalation. Any other wording that mentions sponsorship / right to work / visa
-# (e.g. a bare "Do you have the right to work in the UK?", which can mean current or unrestricted
-# permission) still goes to a human.
+# for. Matched against the whole normalised question (see normalise_question). Recognition only:
+# since 2026-10-13 every work-authorisation question (right to work, permanent/unrestricted right,
+# visa status/expiry, sponsorship now/future, basis of eligibility, immigration status) is
+# HUMAN-ONLY -- a recognised wording escalates as "human_only:work_authorisation:<field>", any other
+# wording via SENSITIVE. No executor ever answers one, whatever the approved package holds.
 DETERMINISTIC_QUESTIONS = tuple((re.compile(pattern), field) for pattern, field in (
     # Sponsorship now or in the future -> require_sponsorship_now_or_future
     (rf"(?:will|do) you (?:now or in the future |currently or in the future |now or will you in the future )?"
@@ -153,6 +192,7 @@ DETERMINISTIC_QUESTIONS = tuple((re.compile(pattern), field) for pattern, field 
     (rf"are you currently (?:legally )?(?:eligible|permitted|entitled|authori[sz]ed|allowed) to work in {_UK}",
      "right_to_work_uk"),
 ))
+HUMAN_ONLY_WORK_AUTHORISATION = "human_only:work_authorisation"
 PAGE_EVIDENCE = {"screen_state", "screenshot_evidence", "application_portal_status"}
 # In stop-only mode a confirmation implies an unexpected submission may have happened.
 SUBMISSION_EVIDENCE = {"confirmation_id", "confirmation_page", "confirmation_text", "manual_verified"}
@@ -167,11 +207,72 @@ BARE_ASSERTIONS = {"done", "success", "successful", "succeeded", "completed", "c
                    "finished", "submitted", "task completed", "completed successfully", "all done", "true", "yes"}
 
 
+# Required-field markers forms append to labels: ASCII/fullwidth asterisks and the star glyphs some
+# hosted forms use (Lever: U+2731 "✱"). Removed wherever they appear; never part of a question.
+_REQUIRED_MARKERS = str.maketrans({c: " " for c in "*\uff0a\u2217\u204e\u2731\u2732\u2733\u273d"})
+
+
+def strip_required_markers(text):
+    return (text or "").translate(_REQUIRED_MARKERS)
+
+
 def normalise_question(page_label):
     """Casefolded, single-spaced, without required-markers, leading numbering or trailing ?/:/."""
-    label = " ".join(page_label.replace("*", " ").split()).casefold()
+    label = " ".join(strip_required_markers(page_label).translate(_APOSTROPHES).split()).casefold()
     label = re.sub(r"^\d{1,2}[.)]\s*", "", label)
     return label.rstrip(" ?:.").strip()
+
+
+# --- Location-family semantics (the deterministic browser runner only) -----------------------------
+# A control whose primary label is exactly a LABELS location / city / country wording asks for one of
+# three approved facts. Its OWN helper text (description, aria-describedby, the field's own container;
+# never page or section text) may narrow an ambiguous label. Precedence:
+#     country-only signal > city-only signal > general current location.
+# A helper that contradicts an explicit "country" or "city" label is a conflict: a human decides.
+# Controls whose label is not location-family ignore helper text entirely.
+LOCATION_FAMILY = ("country", "city", "location")  # precedence order
+_RESIDE = r"(?:reside|residing|live|living|based|located)"
+_HELPER_SIGNALS = {
+    "country": re.compile(r"(?:^country$|\bcurrent country\b|\bcountry of (?:current )?residence\b"
+                          rf"|\bcountry (?:where |in which |that )?you(?:'re| are)? (?:currently )?{_RESIDE}\b"
+                          rf"|\bwhich country (?:are|do) you (?:currently )?{_RESIDE}\b)"),
+    "city": re.compile(r"(?:^(?:city|town)$|\bcurrent city\b|\bcity of (?:current )?residence\b"
+                       rf"|\bcity (?:where |in which |that )?you(?:'re| are)? (?:currently )?{_RESIDE}\b"
+                       rf"|\bwhich city (?:are|do) you (?:currently )?{_RESIDE}\b)"),
+}
+# Separates a primary label from the helper text that narrowed it, in a filled field's page_label, so
+# the import-time re-check (question / label_fields) sees exactly what the runner resolved.
+HELPER_SEPARATOR = " || "
+CONFLICTING_LOCATION = "conflicting_location_semantics"
+
+
+def _location_label_class(label):
+    label = normalise_question(label)
+    return next((field for field in LOCATION_FAMILY if label in LABELS[field]), None)
+
+
+def location_field(label, helper=""):
+    """For a location-family control: "country", "city" or "location" from its label narrowed by its
+    own helper text; CONFLICTING_LOCATION when the helper contradicts an explicit label; None when
+    the label is not location-family (helper text is then never consulted)."""
+    base = _location_label_class(label)
+    if base is None:
+        return None
+    text = normalise_question(helper or "")
+    signals = [field for field in ("country", "city") if text and _HELPER_SIGNALS[field].search(text)]
+    if base == "location":
+        return signals[0] if signals else "location"
+    return base if all(signal == base for signal in signals) else CONFLICTING_LOCATION
+
+
+def semantic_label(label, helper=""):
+    """The label to resolve: the primary label itself unless its own helper text changes (or
+    contradicts) the location-family field; then "<label> || <helper>"."""
+    helper = " ".join((helper or "").split())
+    field = location_field(label, helper)
+    if field is None or field == _location_label_class(label):
+        return label
+    return f"{label}{HELPER_SEPARATOR}{helper}"
 
 
 def deterministic_field(page_label):
@@ -184,23 +285,30 @@ def deterministic_field(page_label):
 def label_fields(page_label, *, deterministic=False):
     """Canonical fields a page label may be answered from: with `deterministic` (the browser
     runner) the one unambiguous work-authorisation question field, else the exact LABELS vocabulary."""
-    field = deterministic_field(page_label) if deterministic else None
-    if field is not None:
-        return [field]
+    if deterministic and HELPER_SEPARATOR in page_label:
+        field = location_field(*page_label.split(HELPER_SEPARATOR, 1))
+        return [field] if field in LOCATION_FAMILY else []
+    if deterministic_field(page_label) is not None:
+        return []  # work authorisation is human-only
     label = normalise_question(page_label)
-    return [f for f, labels in LABELS.items() if label in labels]
+    exact = [f for f, labels in LABELS.items() if label in labels]
+    profile = profile_link_field(page_label)
+    return exact or ([profile] if profile else [])
 
 
 def escalation_reason(page_label, *, deterministic=False):
-    """None only for an exact permitted label; otherwise why a human must answer. `deterministic`
-    (opt-in, the browser runner only) also permits the DETERMINISTIC_QUESTIONS wordings; every other
-    executor keeps escalating anything sensitive."""
-    if deterministic and deterministic_field(page_label) is not None:
-        return None
+    """None only for an exact permitted label; otherwise why a human must answer. Work-authorisation
+    questions are always human-only, for every executor."""
+    work_authorisation = deterministic_field(page_label)
+    if work_authorisation is not None:
+        return f"{HUMAN_ONLY_WORK_AUTHORISATION}:{work_authorisation}"
     label = " ".join(page_label.split()).casefold()
     hit = next((term for term in SENSITIVE if term in label), None)
     if hit:
         return "sensitive:" + hit
+    if deterministic and HELPER_SEPARATOR in page_label and location_field(
+            *page_label.split(HELPER_SEPARATOR, 1)) == CONFLICTING_LOCATION:
+        return CONFLICTING_LOCATION
     if not label_fields(page_label, deterministic=deterministic):
         if any(term in label for term in PROFILE_LINK_TERMS):
             return "ambiguous_profile_link"
@@ -219,11 +327,39 @@ def question(package, field, page_label, page_context, evidence, *, deterministi
             "allowed_known_answers": [], "screenshot_or_evidence": evidence}
 
 
+def _identity_norm(value):
+    return " ".join(unicodedata.normalize("NFKC", value or "").split()).casefold()
+
+
+def expected_company_names(package):
+    """The sealed company names this posting's page may show: package.company (the stored ATS
+    slug) plus the package's sealed expected_company_names. A name shorter than 3 characters or
+    without a letter is never a meaningful identity and is ignored."""
+    names = []
+    for name in (getattr(package, "company", ""), *getattr(package, "expected_company_names", ())):
+        norm = _identity_norm(name)
+        if len(norm) >= 3 and any(ch.isalpha() for ch in norm) and norm not in names:
+            names.append(norm)
+    return tuple(names)
+
+
+def company_seen(package, page_text):
+    """The sealed expected company name the page text shows as a whole word/phrase, else None.
+    Case-insensitive after NFKC + whitespace normalisation; never a prefix/suffix of a longer word
+    ("Fanvue" does not match "Fanvuetastic"). The longest matching name wins."""
+    text = _identity_norm(page_text)
+    hits = [n for n in expected_company_names(package)
+            if re.search(rf"(?<![\w]){re.escape(n)}(?![\w])", text)]
+    return max(hits, key=len) if hits else None
+
+
 def check_page(package, *, company, role, application_url, duplicate=False):
+    """Matched only when the observed company is exactly one of the sealed expected company names,
+    the observed role is exactly the package role and the URL is exactly the application URL."""
     if duplicate:
         return "duplicate_detected"
-    norm = lambda v: " ".join(v.split()).casefold()
-    if (norm(company) != norm(package.company) or norm(role) != norm(package.role)
+    if (_identity_norm(company) not in expected_company_names(package)
+            or _identity_norm(role) != _identity_norm(package.role)
             or application_url != package.application_url):
         return "aborted_wrong_job"
     return "matched"

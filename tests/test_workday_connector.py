@@ -80,7 +80,9 @@ class WorkdayConnectorFetchTests(unittest.TestCase):
                 page = pages[call_count["listing"]]
                 call_count["listing"] += 1
                 return page
-            return _detail_payload()
+            detail = _detail_payload()
+            detail["jobPostingInfo"]["jobReqId"] = "JR" + url.rsplit("_", 1)[1]  # one distinct requisition per posting
+            return detail
 
         connector = WorkdayConnector(("acme.wd3/AcmeCareers",))
         with patch("jobintel.connectors.workday.fetch_json", side_effect=fake_fetch), patch("time.sleep"):

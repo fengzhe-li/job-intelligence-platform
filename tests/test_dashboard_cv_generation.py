@@ -91,7 +91,9 @@ class DashboardCVGenerationTests(unittest.TestCase):
         text = reader.pages[0].extract_text()
         for heading in ("PROFESSIONAL SUMMARY", "EDUCATION", "TECHNICAL SKILLS", "KEY PROJECTS", "INTERNSHIP EXPERIENCE"):
             self.assertIn(heading, text)
-        self.assertIn("Programming:", text)  # grouped, not one flat keyword list
+        skills = text.split("TECHNICAL SKILLS", 1)[1].split("KEY PROJECTS", 1)[0]
+        groups = [line for line in skills.splitlines() if ": " in line]
+        self.assertTrue(1 <= len(groups) <= 4, groups)  # grouped (at most four categories), not one flat keyword list
         self.assertNotIn("…", text)
         self.assertNotIn("...", text)
 

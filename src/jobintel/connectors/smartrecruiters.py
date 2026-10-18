@@ -9,7 +9,7 @@ from jobintel.models.job import Job, SourceObservation
 # SmartRecruiters' postings API is genuinely paginated (limit/offset, with
 # `totalFound` in the response) -- previously this connector only ever fetched
 # offset=0, silently missing any company posting more than one page of jobs.
-MAX_PAGES_PER_COMPANY = 10
+MAX_PAGES_PER_COMPANY = 50  # 50 x 100 = SCOPE_SAFETY_CAP; pagination stops earlier at the real end
 
 
 class SmartRecruitersConnector(JobSourceConnector):
@@ -30,12 +30,12 @@ class SmartRecruitersConnector(JobSourceConnector):
         # and are therefore never closed by absence (fail-closed).
         observed_at = now_utc()
         collector = ScopeCollector(query)
-        page_size = min(query.limit, 100) or 100
+        page_size = 100  # the API's maximum page size; never the query's result limit
         country = _country_filter(query.location)
         for company_identifier in self.company_identifiers:
             scope = f"{company_identifier}@{country or 'all'}"
             try:
-                items, exhausted = _fetch_all_postings(company_identifier, page_size, country)
+                items, exhausted, total_found = _fetch_all_postings(company_identifier, page_size, country)
             except Exception as exc:
                 collector.fail(scope, company_identifier, f"{type(exc).__name__}: {exc}")
                 continue
@@ -59,7 +59,7 @@ class SmartRecruitersConnector(JobSourceConnector):
                         posted_at=parse_datetime(detail.get("releasedDate") or detail.get("createdOn") or detail.get("updatedOn")),
                     )
                 )
-            collector.add_scope(scope, listed, filtered_out=filtered_out, exhausted=exhausted)
+            collector.add_scope(scope, listed, filtered_out=filtered_out, exhausted=exhausted, listed_total=total_found)
         return collector.snapshot()
 
     def health_check(self) -> SourceHealth:
@@ -104,10 +104,11 @@ def _country_filter(location: str) -> str | None:
     return "gb" if "kingdom" in location.casefold() or location.casefold() == "uk" else None
 
 
-def _fetch_all_postings(company_identifier: str, page_size: int, country: str | None) -> tuple[list[dict[str, Any]], bool]:
-    """Returns (postings, exhausted). `exhausted` is False when the page cap
+def _fetch_all_postings(company_identifier: str, page_size: int, country: str | None) -> tuple[list[dict[str, Any]], bool, int | None]:
+    """Returns (postings, exhausted, totalFound). `exhausted` is False when the page cap
     stopped pagination before the listing's real end -- such a listing is
     not a complete snapshot."""
+    total_found = None
     items: list[dict[str, Any]] = []
     offset = 0
     for _ in range(MAX_PAGES_PER_COMPANY):
@@ -123,10 +124,10 @@ def _fetch_all_postings(company_identifier: str, page_size: int, country: str | 
         total_found = payload.get("totalFound")
         offset += page_size
         if len(page_items) < page_size:
-            return items, True
+            return items, True, total_found
         if isinstance(total_found, int) and offset >= total_found:
-            return items, True
-    return items, False
+            return items, True, total_found
+    return items, False, total_found if isinstance(total_found, int) else None
 
 
 def _detail_payload(company_identifier: str, item: dict[str, Any]) -> dict[str, Any]:

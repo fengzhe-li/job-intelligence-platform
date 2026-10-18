@@ -4,8 +4,8 @@ A. the exact approved, sealed CV is uploaded automatically (and is visible on th
 B. no other file can be uploaded (wrong artifact/hash, tampered sealed copy, no path option);
 C. uploading never submits; D. the upload operations pass only inside the CV-upload window;
 E. unknown upload/storage operations stay fatal; F. location from the authoritative profile;
-G. future sponsorship -> Yes; H. permanent/unrestricted right to work -> No; I. ambiguous
-work-authorisation wording escalates; J. LinkedIn stays unresolved; K. the five open questions
+G / H. sponsorship and permanent/unrestricted right-to-work wordings are recognised but always
+human-only (never answered, 2026-10-13 policy); I. ambiguous work-authorisation wording escalates; J. LinkedIn stays unresolved; K. the five open questions
 stay human-only; L. final_submit_clicked is always False.
 
 Every host is reserved or intercepted (the browser resolves no names): nothing leaves the machine.
@@ -63,10 +63,12 @@ OPEN_QUESTIONS = [
     "Do you or will you require sponsorship to work in the United Kingdom?",
     "Visa sponsorship required?",
 ])
-def test_G_sponsorship_now_or_future_wording_maps_to_the_sponsorship_answer(question):
+def test_G_sponsorship_now_or_future_wording_is_recognised_but_human_only(question):
     assert stop_only.deterministic_field(question) == "require_sponsorship_now_or_future"
-    assert stop_only.escalation_reason(question, deterministic=True) is None
-    assert stop_only.escalation_reason(question) is not None  # other executors (AirTap) still escalate
+    for deterministic in (True, False):
+        assert stop_only.escalation_reason(question, deterministic=deterministic) == (
+            "human_only:work_authorisation:require_sponsorship_now_or_future")
+        assert stop_only.label_fields(question, deterministic=deterministic) == []
 
 
 @pytest.mark.parametrize("question", [
@@ -76,8 +78,10 @@ def test_G_sponsorship_now_or_future_wording_maps_to_the_sponsorship_answer(ques
     "Are you eligible to work in the UK without visa sponsorship?",
     "Do you have indefinite leave to remain in the UK?",
 ])
-def test_H_permanent_or_unrestricted_wording_maps_to_the_unrestricted_answer(question):
+def test_H_permanent_or_unrestricted_wording_is_recognised_but_human_only(question):
     assert stop_only.deterministic_field(question) == "permanent_or_unrestricted_right_to_work"
+    assert stop_only.escalation_reason(question, deterministic=True) == (
+        "human_only:work_authorisation:permanent_or_unrestricted_right_to_work")
 
 
 def test_current_right_to_work_needs_explicit_current_wording():
@@ -154,9 +158,9 @@ def test_B_the_policy_must_name_exactly_the_sealed_cv_and_has_no_path(tmp_path):
     assert validate_cv_upload_policy(bundle, policy_for(bundle))
     assert {f.name for f in dataclasses.fields(CvUploadPolicy)} == {
         "artifact_id", "sha256", "filename", "graphql_mutations", "storage_writes",
-        "association_mutations"}  # no file path at all
+        "association_mutations", "parse_writes"}  # no file path at all
     for bad in (dict(artifact_id="cv-999999999999"), dict(sha256="0" * 64), dict(filename="../../etc/passwd"),
-                dict(filename="cv.exe"), dict(filename="/Users/x/cv.pdf")):
+                dict(filename="cv.exe"), dict(filename="/absolute/path/cv.pdf")):
         with pytest.raises(ValueError):
             validate_cv_upload_policy(bundle, policy_for(bundle, **bad))
 
@@ -268,12 +272,15 @@ def test_A_C_F_G_H_J_K_L_an_almost_complete_draft(tmp_path, server_page):
     kinds = [w.get("kind") for w in result.allowed_writes]
     assert kinds.index("cv_upload_handle") > max(i for i, k in enumerate(kinds) if k == "graphql_form_write"
                                                  and result.allowed_writes[i]["field"] != "cv")
-    # F / G / H: deterministic fields from the approved package.
-    assert {f["field"] for f in result.fields_filled} >= {
-        "location", "require_sponsorship_now_or_future", "permanent_or_unrestricted_right_to_work", "name", "email"}
+    # F: deterministic fields from the approved package; G / H: work authorisation is human-only.
+    filled = {f["field"] for f in result.fields_filled}
+    assert filled >= {"location", "name", "email"}
+    assert not filled & {"require_sponsorship_now_or_future", "permanent_or_unrestricted_right_to_work"}
     assert values(page, "loc")["loc"] == "Sampleton, England, United Kingdom"
-    assert page.eval_on_selector("input[name=spons]:checked", "el => el.value") == "Yes"
-    assert page.eval_on_selector("input[name=rtw]:checked", "el => el.value") == "No"
+    assert page.eval_on_selector_all("input[name=spons]:checked, input[name=rtw]:checked", "els => els.length") == 0
+    assert {r for r in escalated(result).values() if r.startswith("human_only:work_authorisation:")} == {
+        "human_only:work_authorisation:require_sponsorship_now_or_future",
+        "human_only:work_authorisation:permanent_or_unrestricted_right_to_work"}
     # J: LinkedIn stays unresolved.
     assert {"label": "linkedin profile", "reason": "no_approved_answer"} in form["fields_skipped"]
     assert values(page, "li") == {"li": ""}
@@ -306,7 +313,7 @@ def test_D_without_the_upload_policy_the_cv_stays_with_the_human(tmp_path, serve
     server, page, bundle, result = live_run(tmp_path, server_page, upload=False)
     assert result.cv_upload_status == "human_required" and server.storage == []
     assert "ApiCreateFileUploadHandle" not in server.operations
-    assert {f["field"] for f in result.fields_filled} >= {"location", "require_sponsorship_now_or_future"}
+    assert {f["field"] for f in result.fields_filled} >= {"location", "email"}
 
 
 @pytest.mark.parametrize("mode,blocked", [
@@ -327,7 +334,7 @@ def test_E_an_unconfigured_storage_host_is_fatal_and_reveals_only_method_host_pa
     assert {k: result.blocked_requests[-1][k] for k in ("method", "host", "path")} == (
         {"method": "POST", "host": STORAGE, "path": "/bucket"})
     # The upload is done last: everything else was already filled before it stopped.
-    assert {f["field"] for f in result.fields_filled} >= {"location", "require_sponsorship_now_or_future", "email"}
+    assert {f["field"] for f in result.fields_filled} >= {"location", "email"}
 
 
 def test_B_a_tampered_sealed_copy_is_never_uploaded(tmp_path, server_page):
@@ -356,11 +363,13 @@ def test_A_an_upload_the_page_never_shows_is_escalated(tmp_path, server_page):
     assert result.cv_upload_status == "escalated" and escalated(result)["resume"] == "cv_upload_not_confirmed"
 
 
-def test_G_I_sponsorship_wording_variants_in_the_page(tmp_path, server_page):
+def test_G_I_sponsorship_wording_variants_in_the_page_stay_human_only(tmp_path, server_page):
     server, page, bundle, result = live_run(tmp_path, server_page, "?mode=ok&spons=future&rtw=current")
-    assert page.eval_on_selector("input[name=spons]:checked", "el => el.value") == "Yes"
-    assert page.eval_on_selector("input[name=rtw]:checked", "el => el.value") == "Yes"
-    assert {"require_sponsorship_now_or_future", "right_to_work_uk"} <= {f["field"] for f in result.fields_filled}
+    assert page.eval_on_selector_all("input[type=radio]", "els => els.filter(e => e.checked).length") == 0
+    assert not {"require_sponsorship_now_or_future", "right_to_work_uk"} & {f["field"] for f in result.fields_filled}
+    assert {r for r in escalated(result).values() if r.startswith("human_only:work_authorisation:")} == {
+        "human_only:work_authorisation:require_sponsorship_now_or_future",
+        "human_only:work_authorisation:right_to_work_uk"}
 
 
 def test_I_ambiguous_work_authorisation_questions_are_escalated_not_guessed(tmp_path, server_page):

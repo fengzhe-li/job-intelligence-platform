@@ -93,4 +93,7 @@ def _from_dict(payload: dict[str, Any]) -> GeneratedCVArtifact:
         github_freshness_state=payload.get("github_freshness_state", "not_configured"),
         writing_policy=payload.get("writing_policy", ""),
         writing_quality=payload.get("writing_quality", {}),
+        render_side_margin_mm=payload.get("render_side_margin_mm"),
+        ats_coverage=payload.get("ats_coverage", []),
+        learning_backlog=payload.get("learning_backlog", []),
     )

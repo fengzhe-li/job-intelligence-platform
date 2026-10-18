@@ -86,3 +86,9 @@ class GeneratedCVArtifact:
     # its Writing Quality Gate diagnostics over the final document.
     writing_policy: str = ""
     writing_quality: dict = field(default_factory=dict)
+    # Left/right page margin (None for artifacts recorded before side margins existed: = render_margin_mm).
+    render_side_margin_mm: float | None = None
+    # Internal ATS lexical coverage of the JD's important terms (matching.jd_lexicon; never on the CV) and the
+    # learning backlog of user-approved refresh skills this CV lists. Empty for records written before 2026-10-15.
+    ats_coverage: list = field(default_factory=list)
+    learning_backlog: list = field(default_factory=list)

@@ -85,6 +85,8 @@ class LiveHostAuthorization:
     nonfatal_blocked_writes: tuple = ()
     # local_browser only: upload exactly the package's sealed CV once (browserbase_runner.CvUploadPolicy)
     cv_upload: object = None
+    # local_browser only: exact (method, host, path) page-load security/CAPTCHA-bootstrap requests that pass
+    page_security_writes: tuple = ()
 
 
 MAX_LIVE_WRITE_ALLOWLIST = 5
@@ -182,6 +184,9 @@ class BrowserbaseServiceExecutor:
         graphql_policy.validate_reads(package.application_url, live.graphql_reads)
         graphql_policy.validate_form_writes(package.application_url, live.graphql_form_writes)
         browserbase_runner.validate_nonfatal_blocked_writes(package.application_url, live.nonfatal_blocked_writes)
+        browserbase_runner.validate_page_security_writes(package.application_url, live.page_security_writes)
+        if live.page_security_writes and self.name != "local_browser":
+            raise ValueError("Page-security entries are only available for the local_browser executor")
         if live.cv_upload is not None:
             if self.name != "local_browser":
                 raise ValueError("An approved CV upload is only available for the local_browser executor")
@@ -222,6 +227,8 @@ class BrowserbaseServiceExecutor:
             extra = {"live_host": self.live.host, "graphql_reads": self.live.graphql_reads,
                      "graphql_form_writes": self.live.graphql_form_writes,
                      "nonfatal_blocked_writes": self.live.nonfatal_blocked_writes}
+            if self.live.page_security_writes:
+                extra["page_security_writes"] = self.live.page_security_writes
             if self.live.cv_upload is not None:
                 # Bound to the sealed bundle too: the runner re-hashes the sealed CV before any upload.
                 browserbase_runner.validate_cv_upload_policy(bundle, self.live.cv_upload)

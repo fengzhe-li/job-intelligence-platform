@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import replace, dataclass, field
 
 from jobintel.models.candidate import CandidateProfile, Project
 from jobintel.models.job import Job
@@ -39,41 +39,65 @@ ROLE_RELEVANCE_WEIGHT = 3.0
 # transferable project matches no JD requirement, and every unsupported
 # requirement stays unsupported.
 #
-# dimension -> (JD-text signal pattern, capability names that evidence it)
-TRANSFERABLE_DIMENSIONS: dict[str, tuple[str, frozenset[str]]] = {
+# dimension -> (JD-text signal pattern, capability names that evidence it, evidence-text pattern).
+# The evidence-text pattern is matched against the project's OWN linked evidence quotes (curated
+# from what its repository implements and validates), so a project that demonstrates the
+# capability -- e.g. repeated validation trials for "testing" -- counts even when it carries no
+# matching tool name. It never creates a skill: it only says the JD-named dimension is evidenced.
+TRANSFERABLE_DIMENSIONS: dict[str, tuple[str, frozenset[str], str | None]] = {
     "testing": (
         r"\btests?\b|\btesting\b|\btdd\b|\bbdd\b|test-driven|unit[- ]test",
         frozenset({"pytest", "junit", "jest", "unittest", "selenium", "cypress", "playwright"}),
+        r"\b\d+/\d+ (?:final |strict |successful )?(?:trials|validation|runs|migrations)\b|\brepeated evaluation\b"
+        r"|\btestbed\b|\btest client\b|\bintegration tests?\b|\bvalidation (?:runs|trials)\b",
     ),
     "ci_cd": (
         r"continuous (?:integration|delivery|deployment)|\bci/cd\b|\bci\b|github actions|jenkins",
         frozenset({"ci/cd", "github actions", "jenkins", "gitlab ci"}),
+        None,
+    ),
+    "automation": (
+        r"\bautomat(?:e|ed|es|ing|ion)\b",
+        frozenset(),
+        r"\bautomat(?:ed|es|ing|ion)\b|\borchestrat(?:e|es|ing|ion)\b|github actions runs",
+    ),
+    "resilience": (
+        r"\bresilien(?:t|ce)\b|\breliab(?:le|ility)\b|fault[- ]toleran|high[- ]availability|\bfailover\b",
+        frozenset(),
+        r"\bretry\b|\bdeduplicat|\bidempoten|\bcontinuity\b|\bpreserves? an active session\b"
+        r"|without disconnecting|\bfailover\b|\bdowntime\b",
     ),
     "containers_linux": (
         r"\bdocker\b|\bcontaineri[sz]|\bcontainers?\b|kubernetes|\blinux\b|\bunix\b",
         frozenset({"docker", "kubernetes", "linux", "bash"}),
+        None,
     ),
     "apis_services": (
         r"\bapis?\b|\brest(?:ful)?\b|microservices?|back[- ]?end|web services?",
         frozenset({"rest", "fastapi", "flask", "django", "spring", "express", "grpc", "graphql"}),
+        None,
     ),
     "databases": (
         r"\bdatabases?\b|\bsql\b|\bpersistence\b|data model",
         frozenset({"sql", "postgresql", "mysql", "sqlite", "dynamodb", "mongodb", "redis"}),
+        None,
     ),
     "distributed_networked": (
         r"\bdistributed\b|\bnetwork(?:ed|ing)?\b|\bmessaging\b|message queue|event[- ]driven|\btcp\b",
         frozenset({"tcp/ip", "mqtt", "kafka", "rabbitmq", "grpc", "websocket"}),
+        None,
     ),
     "systems_performance": (
         r"\blatency\b|\bthroughput\b|low[- ]level|systems programming|operating systems?",
         frozenset({"c", "c++", "rust", "linux", "criu"}),
+        None,
     ),
 }
 # Fallback only kicks in below this many exact-match projects ...
 MIN_EXACT_MATCH_PROJECTS = 2
-# ... and fills to at most this many projects in total (never just to fill space).
-TRANSFERABLE_FALLBACK_TARGET = 3
+# ... and fills to at most this many projects in total (never just to fill space: each needs
+# MIN_TRANSFERABLE_SCORE of its own JD-named, evidenced dimensions).
+TRANSFERABLE_FALLBACK_TARGET = 4
 # A project needs at least one full-strength JD-named dimension to qualify.
 MIN_TRANSFERABLE_SCORE = 1.0
 
@@ -163,8 +187,8 @@ def score_transferable_projects(
     exclude_ids = exclude_ids or set()
     jd_text = f"{job.title}\n{job.description or ''}".casefold()
     jd_dimensions = {
-        name: capabilities
-        for name, (pattern, capabilities) in TRANSFERABLE_DIMENSIONS.items()
+        name: (capabilities, evidence_pattern)
+        for name, (pattern, capabilities, evidence_pattern) in TRANSFERABLE_DIMENSIONS.items()
         if re.search(pattern, jd_text)
     }
     if not jd_dimensions:
@@ -183,17 +207,27 @@ def score_transferable_projects(
             for capability in profile.capabilities.values()
             if any(evidence.project_id == project.id for evidence in capability.evidence)
         }
+        # The project's own strong/partial evidence quotes, for evidence-text signals.
+        quotes = [(evidence.quote or "", capability.evidence_tier)
+                  for capability in project_capabilities.values() if tier_weight[capability.evidence_tier] > 0
+                  for evidence in capability.evidence if evidence.project_id == project.id]
         score = 0.0
         supported: list[str] = []
-        for dimension, capability_names in jd_dimensions.items():
+        for dimension, (capability_names, evidence_pattern) in jd_dimensions.items():
             evidenced = sorted(
                 (project_capabilities[name] for name in capability_names if name in project_capabilities),
                 key=lambda capability: -tier_weight[capability.evidence_tier],
             )
-            if not evidenced or tier_weight[evidenced[0].evidence_tier] <= 0:
+            if evidenced and tier_weight[evidenced[0].evidence_tier] > 0:
+                score += tier_weight[evidenced[0].evidence_tier]
+                supported.append(f"{dimension} ({', '.join(c.name for c in evidenced if tier_weight[c.evidence_tier] > 0)})")
                 continue
-            score += tier_weight[evidenced[0].evidence_tier]
-            supported.append(f"{dimension} ({', '.join(c.name for c in evidenced if tier_weight[c.evidence_tier] > 0)})")
+            hits = [(match.group(0), tier) for quote, tier in quotes if evidence_pattern
+                    for match in re.finditer(evidence_pattern, quote, re.IGNORECASE)]
+            if hits:
+                score += max(tier_weight[tier] for _, tier in hits)
+                shown = list(dict.fromkeys(text for text, _ in hits))[:3]
+                supported.append(f"{dimension} (evidence: {', '.join(repr(text) for text in shown)})")
         if score < MIN_TRANSFERABLE_SCORE:
             continue
         if primary_track is not None:
@@ -345,6 +379,97 @@ def score_projects_for_job_hybrid(
     return sorted(matches, key=lambda item: item.score, reverse=True)
 
 
+# Evidence category weight per role archetype (tailoring_skill.classify_role_archetype): the JD's theme decides
+# which of a project's capability slices gets space (e.g. a web role prefers a project's frontend evidence).
+ARCHETYPE_CATEGORY_WEIGHTS = {
+    "fullstack": {"Frontend": 1.0, "Backend": 0.4},
+    "platform_cloud_systems": {"Systems": 1.0, "Cloud": 0.8, "DevOps": 0.6, "Networking": 0.8, "Testing": 0.3},
+    "ai_applied_ai": {"ML/AI": 1.0, "Modeling": 0.6, "ML": 0.8, "Backend": 0.3},
+    "backend_general_swe": {"Backend": 1.0, "Database": 0.5, "Testing": 0.2},
+    "fintech": {"Backend": 0.6, "ML/AI": 0.4, "Database": 0.4},
+    "motorsport": {"Modeling": 1.0, "Embedded": 1.0, "Systems": 0.6},
+}
+
+
+THEME_WEIGHT = 2.5
+
+
+# The JD's own wording strengthens a category beyond its archetype default (a reliability/networking JD weighs
+# systems work more): weight x (1 + 0.25 per distinct signal, capped at x2).
+_CATEGORY_SIGNALS = {
+    "Systems": r"\b(linux|network\w*|tcp|reliab\w*|incident|recover\w*|failover|on-call|resilien\w*|scripting|kernel)\b",
+    "Frontend": r"\b(react|typescript|component|ui|ux|front[- ]?end|browser|css|accessib\w*)\b",
+    "ML/AI": r"\b(llms?|genai|generative|machine learning|models?|agents?|rag|evaluation)\b",
+    "Cloud": r"\b(aws|gcp|azure|cloud|serverless|lambda)\b",
+    "Backend": r"\b(apis?|backend|microservices?|databases?|python)\b",
+    "Embedded": r"(?<![\w+#])(?:c/c\+\+|c\+\+|embedded|firmware|microcontrollers?|kernel|low[- ]level|device drivers?)(?![\w+#])",
+}
+# A category the archetype does not list still counts when the JD itself signals it strongly (2026-10-15: a
+# Linux / C/C++ role titled only "Software Engineer" must favour Linux-systems and C evidence): it gets the base
+# weight of an archetype's primary category, scaled by its signals like any other.
+SIGNALLED_CATEGORY_MIN_SIGNALS = 2
+SIGNALLED_CATEGORY_BASE = 1.0
+# Only low-level evidence categories are added this way; every other category keeps its archetype weight.
+SIGNALLED_CATEGORIES = ("Systems", "Embedded")
+
+
+def archetype_category_weights(job: Job) -> dict:
+    import re
+    from jobintel.matching.tailoring_skill import classify_role_archetype
+    weights = dict(ARCHETYPE_CATEGORY_WEIGHTS.get(classify_role_archetype(job), {}))
+    text = f"{job.title} {job.description or ''}".casefold()
+    for category, pattern in _CATEGORY_SIGNALS.items():
+        signals = len(set(re.findall(pattern, text)))
+        if category in weights:
+            weights[category] = round(weights[category] * min(2.0, 1 + 0.25 * signals), 3)
+        elif category in SIGNALLED_CATEGORIES and signals >= SIGNALLED_CATEGORY_MIN_SIGNALS:
+            weights[category] = round(SIGNALLED_CATEGORY_BASE * min(2.0, 1 + 0.25 * signals), 3)
+    return weights
+
+
+# Recruiter-facing relevance check (2026-10-15). A requirement is "ubiquitous" when at least this share of the
+# candidate projects match it (Python, REST, Docker, SQL, testing ...): matching it says nothing about whether
+# the project's problem shape fits the role.
+UBIQUITOUS_REQUIREMENT_SHARE = 0.5
+# A project matching only ubiquitous requirements keeps its slot only with at least this share of the best
+# role-specific (theme) evidence among the candidates.
+GENERIC_ONLY_MIN_THEME_SHARE = 0.5
+MIN_SELECTED_PROJECTS = 2
+GENERIC_ONLY_FACTOR = 0.5
+
+
+def generic_only_projects(matches: list, profile: CandidateProfile, theme_weights: dict) -> set[str]:
+    """Projects that would occupy a CV slot only through generic shared technologies: every JD requirement
+    they match is ubiquitous among the candidates AND their role-specific capability evidence is weak relative
+    to the strongest candidate. They are demoted (GENERIC_ONLY_FACTOR), not deleted: such a project yields its
+    slot to any candidate with role-specific evidence and fills one only when nothing stronger exists.
+    No project, company or domain name is consulted."""
+    if len(matches) <= MIN_SELECTED_PROJECTS:
+        return set()
+    counts: dict[str, int] = {}
+    for m in matches:
+        for req in {r.casefold() for r in m.matched_requirements}:
+            counts[req] = counts.get(req, 0) + 1
+    threshold = max(2, UBIQUITOUS_REQUIREMENT_SHARE * len(matches))
+    theme = {m.project.id: capability_theme_bonus(m.project, profile, theme_weights) for m in matches}
+    best_theme = max(theme.values(), default=0.0)
+
+    def generic_only(m) -> bool:
+        return all(counts.get(r.casefold(), 0) >= threshold for r in m.matched_requirements)
+
+    return {m.project.id for m in matches
+            if generic_only(m) and theme[m.project.id] < GENERIC_ONLY_MIN_THEME_SHARE * best_theme}
+
+
+def capability_theme_bonus(project, profile: CandidateProfile, weights: dict) -> float:
+    """JD-theme fit from the project's IMPLEMENTED capability slices (code-derived evidence categories):
+    each matching category counts once, so a project's frontend counts for a web role even when its
+    curated identity is a model."""
+    categories = {ev.category for cap in profile.capabilities.values() for ev in cap.evidence
+                  if ev.project_id == project.id and ":capmap:" in ev.id and ev.confidence >= 0.9}
+    return round(sum(weights.get(c, 0.0) for c in categories) * THEME_WEIGHT, 3)
+
+
 def select_top_projects_hybrid(
     job: Job,
     profile: CandidateProfile,
@@ -363,8 +488,11 @@ def select_top_projects_hybrid(
     )
     mode = "gemini_assisted" if is_assisted else "deterministic"
 
-    # 1. Relevance is strictly primary: only consider projects with positive evidence score
-    relevant_matches = [m for m in initial_matches if m.score > 0]
+    # 1. Relevance is strictly primary: only consider projects with positive evidence score -- a JD skill match,
+    # or implemented capability slices in the JD's theme (a Linux-systems project for a platform role).
+    theme_weights = archetype_category_weights(job)
+    relevant_matches = [m for m in initial_matches if m.score > 0 or capability_theme_bonus(m.project, profile, theme_weights) > 0]
+    demoted = generic_only_projects(relevant_matches, profile, theme_weights)
     if not relevant_matches:
         selected, explanations = _with_transferable_fallback(job, profile, [], {}, max_projects)
         return selected, explanations, mode
@@ -405,6 +533,9 @@ def select_top_projects_hybrid(
 
             if primary_track is not None:
                 inc_score += match.project.role_relevance.get(primary_track.track, 0.0) * ROLE_RELEVANCE_WEIGHT
+            inc_score += capability_theme_bonus(match.project, profile, theme_weights)
+            if match.project.id in demoted:
+                inc_score *= GENERIC_ONLY_FACTOR
 
             inc_score = round(inc_score, 3)
 
@@ -421,8 +552,11 @@ def select_top_projects_hybrid(
         if best_candidate is None or best_incremental_score <= 0:
             break
 
-        selected.append(best_candidate)
         remaining.remove(best_candidate)
+        # The page emphasis (focus / secondary) follows this JD relevance, theme included.
+        theme = capability_theme_bonus(best_candidate.project, profile, theme_weights)
+        best_candidate = replace(best_candidate, score=round(best_candidate.score + theme, 3))
+        selected.append(best_candidate)
         explanations[best_candidate.project.id] = best_explanation
 
         for req_name in best_candidate.matched_requirements:

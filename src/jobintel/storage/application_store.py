@@ -106,6 +106,32 @@ class ApplicationStore:
         return updated
 
     @locked
+    def update_application_url(self, application_id: str, new_url: str, note: str = "",
+                               workable_account: str | None = None) -> Application:
+        """Move an unsubmitted, idle application to the URL its hosted ATS really serves the form on --
+        only the exact mapping submission.hosted_urls.hosted_application_url allows; recorded in history."""
+        from jobintel.submission.hosted_urls import hosted_application_url
+        applications = self.read_applications()
+        existing = next((item for item in applications if item.id == application_id), None)
+        if existing is None:
+            raise ValueError(f"No application with id {application_id}")
+        if existing.is_submitted:
+            raise ValueError(f"Application {application_id} was already submitted; its URL is history")
+        if new_url == existing.application_url:
+            return existing
+        if hosted_application_url(existing.application_url, workable_account=workable_account) != new_url:
+            raise ValueError(f"Application {application_id}: {new_url!r} is not the hosted form URL of its recorded URL")
+        SubmissionStore(self.root).assert_application_idle(application_id)
+        SubmissionStore(self.root).revoke_unqueued(application_id, "application_url_changed")
+        now = datetime.now(timezone.utc)
+        updated = replace(existing, application_url=new_url, updated_at=now)
+        self._write_applications([item for item in applications if item.id != application_id] + [updated])
+        self._append_status_event(ApplicationStatusEvent(
+            application_id, existing.status, existing.status, now,
+            (note + " " if note else "") + f"application URL {existing.application_url} -> {new_url} (hosted form URL)"))
+        return updated
+
+    @locked
     def attach_cv(self, application_id: str, cv_version_id: str, selected_project_ids: list[str], evidence_ids_used: list[str]) -> Application:
         """Record which exact generated CV (and evidence) is intended for this
         application. Allowed freely BEFORE submission; after submission the CV

@@ -27,6 +27,15 @@ def add_submission_commands(subparsers):
         "handoff-release": "Explicitly release a Browserbase handoff session bound to this request; records no result",
         "close": "Human confirms a stop-only request ended with NO application submitted: closed_not_submitted "
                  "(terminal, not a receipt, never APPLIED)",
+        "human-submitted": "Human confirms THEY clicked final Submit after a stop-only handoff: records a "
+                           "human-attested receipt for the approved package/CV (then submission-reconcile)",
+        "apply-preview": "Apply-one step 1: validate ONE application for a supervised local_browser attempt and show "
+                         "the exact package hash (optionally acknowledge its review blockers); starts nothing",
+        "apply-start": "Apply-one step 2: approve the exact previewed package and run ONE supervised local_browser "
+                       "attempt with the host's reviewed execution profile; hands the window to you, never submits",
+        "apply-status": "Apply-one: sanitized outcome of the latest (or given) local_browser attempt; changes nothing",
+        "apply-release": "Apply-one: end the handed-off local browser of this attempt (records no result; then "
+                         "submission-close if you did not submit)",
     }
     for name, help_text in specs.items():
         p = subparsers.add_parser("submission-" + name, help=help_text)
@@ -36,7 +45,7 @@ def add_submission_commands(subparsers):
             p.add_argument("--application-id", required=True)
             p.add_argument("--supervised-ack-file", type=Path,
                            help="Structured SupervisedReviewAcknowledgement JSON (supervised execution only; never final submit)")
-        if name in {"approve", "revoke", "verify", "answer-set", "close"}:
+        if name in {"approve", "revoke", "verify", "answer-set", "close", "human-submitted"}:
             p.add_argument("--reviewer", required=True)
         if name == "approve":
             p.add_argument("--package-hash", required=True)
@@ -55,7 +64,7 @@ def add_submission_commands(subparsers):
         if name == "revoke":
             p.add_argument("--reason", required=True)
         if name in {"claim", "execute", "complete", "verify", "airtap-check", "airtap-import", "handoff-status",
-                    "handoff-release", "close"}:
+                    "handoff-release", "close", "human-submitted"}:
             p.add_argument("--request-id", required=True)
         if name == "claim":
             p.add_argument("--worker", required=True)
@@ -115,6 +124,30 @@ def add_submission_commands(subparsers):
                            help="You reviewed what happened (including any Live View handoff) and NO application "
                                 "was submitted")
             p.add_argument("--reason", required=True)
+        if name == "human-submitted":
+            p.add_argument("--confirmed-submitted", action="store_true", required=True,
+                           help="You yourself clicked final Submit and saw the confirmation page")
+            p.add_argument("--sent-cv", required=True, help="The CV artifact you sent (must be the package's sealed CV)")
+            p.add_argument("--confirmation-text", required=True, help="The confirmation text the page showed")
+        if name in {"apply-preview", "apply-start"}:
+            p.add_argument("--application-id", required=True)
+        if name == "apply-preview":
+            p.add_argument("--acknowledge-blockers", action="store_true",
+                           help="You reviewed the listed BLOCK_AUTO_SUBMISSION reasons and authorize ONE supervised "
+                                "attempt (SUPERVISED_EXECUTION_ONLY, never final submit). Needs --reviewer and --ack-reason")
+            p.add_argument("--reviewer", default=None)
+            p.add_argument("--ack-reason", default=None)
+        if name == "apply-start":
+            p.add_argument("--package-hash", required=True, help="Exactly the hash submission-apply-preview showed")
+            p.add_argument("--reviewer", required=True)
+            p.add_argument("--reviewed", action="store_true", required=True)
+            p.add_argument("--acknowledge-review-reasons", action="store_true",
+                           help="Needed only for a REVIEW_REQUIRED package, as for submission-approve")
+            p.add_argument("--worker", default="local-browser")
+        if name in {"apply-status", "apply-release"}:
+            target = p.add_mutually_exclusive_group(required=True)
+            target.add_argument("--application-id")
+            target.add_argument("--request-id")
         if name == "answer-set":
             p.add_argument("--field", choices=sorted(ALLOWED_FIELDS), required=True)
             p.add_argument("--value", required=True)
@@ -158,11 +191,29 @@ def run_submission_command(args, parser):
                                  live_cv_upload_mutations=tuple(tuple(e) for e in args.live_cv_upload_operation),
                                  live_cv_storage_writes=tuple(tuple(e) for e in args.live_cv_storage_write),
                                  live_cv_association_mutations=tuple(tuple(e) for e in args.live_cv_association_operation))
+        elif name.startswith("apply-"):
+            from jobintel.submission import apply_one
+            if name == "apply-preview":
+                result = apply_one.preview(svc, args.application_id, reviewer=args.reviewer,
+                                           acknowledge_blockers=args.acknowledge_blockers, ack_reason=args.ack_reason)
+            elif name == "apply-start":
+                result = apply_one.start(svc, args.application_id, package_hash=args.package_hash,
+                                         reviewer=args.reviewer, reviewed=args.reviewed,
+                                         acknowledge_review_reasons=args.acknowledge_review_reasons, worker=args.worker)
+            elif name == "apply-status":
+                result = apply_one.status(svc, application_id=args.application_id, request_id=args.request_id)
+            else:
+                result = apply_one.release(svc, application_id=args.application_id, request_id=args.request_id)
         elif name == "handoff-status":
             result = svc.handoff_status(args.request_id)
         elif name == "close":
             result = svc.close_not_submitted(args.request_id, reviewer=args.reviewer,
                                              confirmed_not_submitted=args.confirmed_not_submitted, reason=args.reason)
+        elif name == "human-submitted":
+            result = svc.record_human_submission(args.request_id, reviewer=args.reviewer,
+                                                 confirmed_submitted=args.confirmed_submitted,
+                                                 submitted_cv=args.sent_cv,
+                                                 confirmation_text=args.confirmation_text)
         elif name == "handoff-release":
             result = svc.release_handoff(args.request_id, session_id=args.session_id, claim_token=args.claim_token)
         elif name == "airtap-check":

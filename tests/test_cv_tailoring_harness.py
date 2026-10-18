@@ -179,10 +179,13 @@ class TestReleaseBlockingPairs:
         # McLaren must include Indy 500 in top 4 for modeling/simulation relevance
         assert "personal-source-indy500" in mclaren_pids, "McLaren should include Indy 500"
 
-        # KPMG must strictly exclude Indy 500 (irrelevant domain to tax software)
-        assert "personal-source-indy500" not in kpmg_pids, "KPMG must exclude Indy 500"
-        # KPMG must place Full-Stack (personal-source-3) or AFRA in top 2
-        assert kpmg_pids[0] in ("personal-source-3", "personal-source-afra")
+        # KPMG: every project is there for software evidence the role values (positive affinity), never for a
+        # simulation identity. (Before 2026-10-15 a name rule excluded Indy 500; its tested React + FastAPI code
+        # is relevant full-stack evidence, so the evidence -- not its motorsport domain -- now decides.)
+        assert all(m.purpose_affinity > 0 and m.purpose != ProjectPurpose.SIMULATION_MODELING for m in kpmg_matches)
+        # KPMG (product/enterprise SWE) leads with a full-stack application project, never a systems project.
+        # Since 2026-10-14 the leader is decided by code evidence (FKIP: Python+SQL+FastAPI+React/TS frontend).
+        assert kpmg_matches[0].purpose == ProjectPurpose.FULLSTACK_APPLICATION, kpmg_matches[0].explanation
         assert kpmg_pids[0] != mclaren_pids[0], "McLaren and KPMG must not share identical #1 project"
 
     def test_release_blocking_pair_2_afra_pre_vs_post_phase_6_5(self) -> None:
@@ -282,7 +285,7 @@ class TestReleaseBlockingPairs:
         # Red Bull must include STM32 Embedded Fall Detection
         assert "personal-source-stm32" in rb_pids, "Red Bull Powertrains must include STM32"
 
-        # Barclays must include AFRA
+        # Barclays must include AFRA (a shared finance domain with another selected project is not redundancy)
         assert "personal-source-afra" in barclays_pids, "Barclays must include AFRA"
         # Barclays must not include STM32
         assert "personal-source-stm32" not in barclays_pids, "Barclays should not include STM32"
@@ -358,7 +361,8 @@ class TestAllHistoricalRegressionCases:
         matches = selector.select_projects(job, profile)
         pids = [m.project.id for m in matches]
         assert "personal-source-session-migration" in pids
-        assert "personal-source-afra" in pids
+        # A general developer JD gets a broad portfolio (the employer's name no longer makes it a fintech role)
+        assert len({m.purpose for m in matches}) >= 3
 
     def test_rt05_barclays_weak_cpp_removed(self) -> None:
         policy = TailoringSkillPolicy.load()
@@ -440,8 +444,8 @@ class TestAllHistoricalRegressionCases:
         )
         matches = selector.select_projects(job, profile)
         pids = [m.project.id for m in matches]
-        assert pids[0] in ("personal-source-3", "personal-source-afra")
-        assert "personal-source-indy500" not in pids
+        assert matches[0].purpose == ProjectPurpose.FULLSTACK_APPLICATION  # systems work no longer leads
+        assert all(m.purpose_affinity > 0 and m.purpose != ProjectPurpose.SIMULATION_MODELING for m in matches)
 
     def test_rt14_kpmg_fullstack_outranks_deeper_systems(
         self, profile: CandidateProfile, selector: PolicyProjectSelector
@@ -454,7 +458,10 @@ class TestAllHistoricalRegressionCases:
         )
         matches = selector.select_projects(job, profile)
         pids = [m.project.id for m in matches]
-        assert pids.index("personal-source-3") < pids.index("personal-source-session-migration")
+        # Full-stack outranks deeper systems: MeetEat is selected, and ahead of Session Migration if both are.
+        assert "personal-source-3" in pids
+        if "personal-source-session-migration" in pids:
+            assert pids.index("personal-source-3") < pids.index("personal-source-session-migration")
 
     def test_rt15_kpmg_remove_indy_despite_quality(
         self, profile: CandidateProfile, selector: PolicyProjectSelector

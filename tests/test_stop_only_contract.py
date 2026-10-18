@@ -134,7 +134,7 @@ def test_shared_module_has_no_network_env_store_file_or_secret_access():
     imported = {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
     imported |= {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
     imported |= {a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) for a in n.names}
-    assert imported <= {"pathlib", "Path", "re", "urllib.parse", "urlsplit", "jobintel.models.submission",
+    assert imported <= {"pathlib", "Path", "re", "unicodedata", "urllib.parse", "urlsplit", "jobintel.models.submission",
                         "ApprovedSubmissionPackage", "ExecutionResult", "ReceiptEvidence"}
     attributes = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
     assert not attributes & {"environ", "getenv", "putenv", "system", "popen", "urlopen", "connect",

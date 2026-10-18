@@ -70,6 +70,9 @@ def supervised_review_lines(package: ApprovedSubmissionPackage) -> list[str]:
     ]
 
 
+# Work authorisation / immigration is human-only (2026-10-13): its values are never shown to an agent.
+HUMAN_ONLY_SECTIONS = frozenset({"2. Right to Work & Immigration Status"})
+
 # (label, package fields in preference order) per section. Fields absent from the
 # package are listed as UNRESOLVED, never filled.
 _ANSWER_SECTIONS: tuple[tuple[str, tuple[tuple[str, tuple[str, ...]], ...]], ...] = (
@@ -129,6 +132,9 @@ _ANSWER_SECTIONS: tuple[tuple[str, tuple[tuple[str, tuple[str, ...]], ...]], ...
         ("Experience 2 Organisation", ("employment_2_organisation",)),
         ("Experience 2 Title", ("employment_2_title",)),
         ("Experience 2 Dates", ("employment_2_dates",)),
+        ("Experience 3 Organisation", ("employment_3_organisation",)),
+        ("Experience 3 Title", ("employment_3_title",)),
+        ("Experience 3 Dates", ("employment_3_dates",)),
     )),
     ("7. Background Declarations & Equal Opportunities", (
         ("Criminal Convictions (direct question)", ("criminal_convictions",)),
@@ -183,6 +189,8 @@ def generate_airtap_task(package: ApprovedSubmissionPackage, request: dict) -> s
         "",
         "## Target Application",
         f"- Target Company: {package.company}",
+        *([f"- Expected company names on the page (any one): {', '.join(package.expected_company_names)}"]
+          if package.expected_company_names else []),
         f"- Target Role: {package.role}",
         f"- Application URL: {package.application_url}",
         f"- CV Artifact ID: {package.cv_artifact_id}",
@@ -221,6 +229,10 @@ def generate_airtap_task(package: ApprovedSubmissionPackage, request: dict) -> s
     unresolved: list[str] = []
     for title, rows in _ANSWER_SECTIONS:
         lines += ["", f"### {title}"]
+        if title in HUMAN_ONLY_SECTIONS:
+            lines += [f"- {label}: HUMAN-ONLY (never fill; leave untouched for the candidate and STOP if required)"
+                      for label, _ in rows]
+            continue
         for label, fields in rows:
             value = _package_answer(answers, fields)
             if value is None:

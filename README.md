@@ -1,6 +1,6 @@
 # Job Intelligence Platform
 
-A supervised job-intelligence and application-automation platform for UK graduate software roles. I (Fengzhe Li) designed and built it, and I use it for my own job search.
+A supervised job-intelligence and application-automation platform for UK graduate software roles.
 
 - **Job intelligence.** It discovers jobs from employer ATS feeds, graduate boards and aggregators, merges duplicates across sources, and ranks each job against an evidence-backed candidate profile with a per-component explanation.
 - **Grounded CVs.** It generates job-specific one-page CVs from cited evidence, behind a human review gate.
@@ -10,15 +10,7 @@ A supervised job-intelligence and application-automation platform for UK graduat
   - every question that needs the candidate is escalated;
   - the window is then handed back. **The final Submit is always the human's.**
 
-**Validated end to end on a real form.** In October 2026 a real Ashby-hosted application ran under supervision and reached human handoff:
-- page identity verified;
-- deterministic contact, profile and location fields filled;
-- the approved CV uploaded and associated with the Resume field;
-- no fatal network block;
-- the employer's free-text questions escalated rather than generated;
-- Submit never clicked.
-
-See [Real end-to-end validation](#real-end-to-end-validation).
+The current engineering workflow combines complete-scope ingestion, JD-aware evidence selection, immutable application artifacts, and sequential browser handoff. Private profiles, generated documents and application history remain local.
 
 | | |
 |---|---|
@@ -29,7 +21,7 @@ See [Real end-to-end validation](#real-end-to-end-validation).
 It is a personal system published as a software-engineering portfolio project, **not** a hosted product or a general-purpose auto-applier. Personal data (candidate profile, candidate facts, CVs, applications, ledgers, browser runtime state) lives in git-ignored local stores and is not in this repository.
 
 ![Dashboard: Today view](docs/images/dashboard-today.png)
-<sub>The **Today** page: every count links to the underlying records. All screenshots in this README use synthetic fixture data and a fictional candidate.</sub>
+<sub>The **Today** page: every count links to the underlying records. All screenshots in this README use synthetic fixture data and a fictional candidate; their displayed counts are illustrative, not the current test results.</sub>
 
 ---
 
@@ -45,7 +37,7 @@ It is a personal system published as a software-engineering portfolio project, *
 - [CV generation workflow](#cv-generation-workflow)
 - [Application lifecycle](#application-lifecycle)
 - [Supervised application execution](#supervised-application-execution)
-- [Real end-to-end validation](#real-end-to-end-validation)
+- [Validation boundaries](#validation-boundaries)
 - [Architecture evolution](#architecture-evolution)
 - [Optional Gemini advisory layer](#optional-gemini-advisory-layer)
 - [Dashboard](#dashboard)
@@ -77,7 +69,7 @@ daily-refresh ─► registry ATS boards + Adzuna + Prospects ─► normalise �
                                                                                                 │
 manual imports (Trackr, Gradcracker, Bright Network, any URL) ──────────────────────────────────┤
                                                                                                 ▼
-                        explainable ranking ◄── Evidence Bank (CV, projects, GitHub READMEs)
+                        explainable ranking ◄── Evidence Bank (CV, projects, pinned repository evidence)
                                 │
                                 ▼
        Today / Priority queue ─► CV workbench ─► human review ─► submit manually ─► application tracker
@@ -92,7 +84,7 @@ A typical day: run **Daily Refresh** (dashboard button or `daily-refresh`), open
 - **Connectors** share one `JobSourceConnector` interface and return a `SourceSnapshot`: the payloads plus the scopes (board, site, tenant) whose *entire* listing was observed. That completeness signal is what makes safe closure inference possible.
 - **Pipeline** stages are deterministic and plain Python: normalisation to a canonical `Job`/`SourceObservation` model, enrichment (role track, seniority, sponsorship, graduation year), layered deduplication, history tracking and scoring.
 - **Candidate side**: an Evidence Bank of cited capabilities, JD requirement extraction, per-JD project selection, CV composition, claim grounding, real PDF rendering, the review gate and application tracking.
-- **Interfaces**: a 40-subcommand CLI and a local dashboard built on the standard library's `http.server`. Both read the same store.
+- **Interfaces**: a CLI and a local dashboard built on the standard library's `http.server`. Both read the same store.
 - **Storage** is plain JSON/JSONL under `data/local/`. `data_contracts/schemas/postgres.sql` is a schema contract for a possible future persistence layer; **no code path connects to PostgreSQL today**.
 
 Runtime dependencies are deliberately small: `reportlab` (real PDF layout and page counting) and `PyYAML` (loading the versioned CV-tailoring policy). Connectors use `urllib`, the dashboard uses `http.server`, and deduplication uses `difflib`.
@@ -230,17 +222,49 @@ preview ─► approve (named reviewer, acknowledged gate reasons, expiry) ─�
 - An interrupted run becomes `outcome_unknown` and is never retried automatically.
 - An application is marked applied only from a verified receipt.
 
+**Apply one application.** For day-to-day use, four `submission-apply-*` commands run that lifecycle for one application id. Each step is still explicit and nothing is collapsed into a single command:
+
+```bash
+# 1. Validate, and show the exact package hash. Starts nothing.
+PYTHONPATH=src python3 -m jobintel.cli.main submission-apply-preview --application-id <id>
+#    A package blocked by CV review needs a named human's explicit acknowledgement of exactly
+#    its listed reasons. This authorizes one supervised attempt, never a final submit:
+PYTHONPATH=src python3 -m jobintel.cli.main submission-apply-preview --application-id <id> \
+    --acknowledge-blockers --reviewer "<name>" --ack-reason "<why>"
+# 2. Approve exactly that hash and run ONE supervised attempt. The browser window is handed to you.
+PYTHONPATH=src python3 -m jobintel.cli.main submission-apply-start --application-id <id> \
+    --package-hash <hash from preview> --reviewer "<name>" --reviewed
+# 3. Afterwards:
+PYTHONPATH=src python3 -m jobintel.cli.main submission-apply-status  --application-id <id>
+PYTHONPATH=src python3 -m jobintel.cli.main submission-apply-release --application-id <id>
+PYTHONPATH=src python3 -m jobintel.cli.main submission-close --request-id <id> --reviewer "<name>" \
+    --confirmed-not-submitted --reason "<why>"   # only if you did not submit
+```
+
+The network policy comes from an **ATS execution profile**, matched on the application URL's exact host (`src/jobintel/submission/ats_profiles.py`). There is no fallback for an unknown host.
+
+| Hosted ATS | Profile state | Execution |
+|---|---|---|
+| Ashby | Supervised handoff validated | Exact-host policy; human final Submit |
+| Greenhouse | Supervised handoff validated | Exact-host policy; sealed CV upload |
+| Lever | Fixture-tested; live validation pending | Refused by default; explicit validation-run opt-in required |
+| Workable | Fixture-tested; live validation pending | Refused by default; human-verification holds apply |
+
+**Batch preparation.** `batch-prepare` reuses unchanged CV artifacts and prepares a review queue; it does not apply. `batch-approve` binds one human decision to one package hash. `batch-run-next` executes approved items sequentially under one executor lock, placing each application in its own tab. Employer limits and human-verification widgets can hold an item before a tab opens. Each item retains its own state and failure details; unknown ATS hosts remain visible for manual handling.
+
+**Evidence and document preparation.** Repository capability maps inspect source files, tests, manifests and delivery configuration at a recorded commit without executing repository code. JD extraction separates required, optional and alternative skills. The editorial layer selects complementary evidence, aligns supported wording, normalises the target title, and fits the CV to one page. Cover-letter drafts use the selected CV and job description; generated PDF/DOCX files and learning backlogs stay in the local store and require human review.
+
 **Safety model.**
 
 | Guarantee | How it is enforced |
 |---|---|
 | Only reviewed content is used | The package is sealed: it binds the CV artifact, its PDF SHA-256, every answer with its provenance, the application URL and the review inputs. Any change gives a new hash, and approvals are bound to that hash. |
-| Answers come from facts, not generation | The executor fills only values that resolve deterministically from the authoritative Answer Bank: contact, location, right to work, sponsorship, LinkedIn / GitHub. Each label maps to exactly one field. A LinkedIn field never receives GitHub, and the reverse. |
+| Answers come from facts, not generation | The executor fills only values that resolve deterministically from the authoritative Answer Bank: contact, location and LinkedIn / GitHub. Work-authorisation and immigration questions always stay with the human. Each label maps to exactly one field. A LinkedIn field never receives GitHub, and the reverse. |
 | Unknown, sensitive or ambiguous questions escalate | Unmapped labels, ambiguous profile-link fields, duplicated labels and free-text questions become `needs_human_input`. They are never generated. |
 | The browser can only do what was approved | One exact https host. GraphQL requests are parsed locally and allowed only as exact `(endpoint, operationName)` reads. Per-field autosave mutations are allowed only while one approved field is being filled. Third-party telemetry is aborted but non-fatal only when listed as an exact `(method, host)`. Every other write stops the run. No wildcards, no suffix matching, no learning hosts automatically. |
 | The CV is exactly the approved file | It is re-hashed from the sealed bundle and uploaded inside one CV-upload window. The window allows only the upload-handle mutation, the exact object-storage write (whose readable body must contain the sealed bytes) and one form-association mutation that names this upload. `uploaded` requires every step, successful responses and the file name visible in the page. |
 | Never a final Submit | Every submission path is blocked in-page and on the network while the runner works. There is no option or code path that clicks Submit. At handoff the runner removes its routes and releases its own guard with a per-run secret, then leaves the window to the human. `final_submit_clicked` is always false. |
-| Isolation | Local runs use a fresh, empty Chrome profile under the git-ignored `data/runtime/`, with remote debugging on `127.0.0.1` only. Release ends only that process, verified by its exact profile directory. Claim tokens, debug URLs, cookies, headers, form values and request bodies are never logged. |
+| Isolation | Local runs use a fresh, empty Chrome profile under the git-ignored `data/runtime/`, with remote debugging on `127.0.0.1` only. Single-run release ends only its verified process; batch release closes only the request-bound tab. Claim tokens, debug URLs, cookies, headers, form values and request bodies are never logged. |
 
 **Data separation.**
 
@@ -263,34 +287,11 @@ See [Submission MVP](docs/SUBMISSION_MVP.md) for commands, storage, invariants a
 
 **Convenience review copy.** Attaching a CV also writes a byte-identical copy (SHA-256 verified) to `~/Downloads` for reading. It is never the source of truth and never overwrites a different file.
 
-## Real end-to-end validation
+## Validation boundaries
 
-In October 2026 one real, Ashby-hosted graduate software-engineering application was run through the full path under supervision, using the `local_browser` executor:
+The offline suites use synthetic candidates and locally served ATS-style forms. They test identity checks, exact sealed-file uploads, network guards, human-only questions, sequential batch execution and tab isolation. Ashby and Greenhouse profiles carry supervised-handoff validation status; Lever and Workable remain gated pending a successful validation run. This is not a claim that every employer form on those vendors is supported.
 
-| Check | Result |
-|---|---|
-| Page identity (company, role, URL) | verified before any field was touched |
-| Deterministic fields | name, email, phone, LinkedIn (from the authoritative profile) and current location filled from the sealed package |
-| Approved CV | upload handle created → object-storage write → form association → file name visible in the Resume field (`cv_upload_status = uploaded`) |
-| Network policy | no fatal blocked operation (`blocked_fatal_operations = []`) |
-| Employer's free-text questions | all five escalated as human-only, none generated |
-| Final action | `final_submit_clicked = false`; the browser window was handed back for the candidate to review and submit manually |
-
-The run's sanitised summary, as recorded in the local ledger (identifiers, hashes and personal values omitted):
-
-```text
-identity_state           = verified
-cv_upload_status         = uploaded
-  upload_handle_created  = true
-  storage_written        = true
-  form_associated        = true
-  visible_in_page        = true
-blocked_fatal_operations = []
-final_submit_clicked     = false
-handoff                  = local_browser_active
-```
-
-Earlier runs against the same form stopped safely on gaps the design had not anticipated. Those stops are what shaped the current policy (see below). Validation covers one ATS vendor and one real form; it is not a claim of general ATS support.
+Live Browserbase and source probes are opt-in. The public test run does not require a candidate profile, application history, answer bank, credentials or a signed-in browser. Generated cover letters are drafts: their templates and eligibility assumptions still need human review for the particular candidate and vacancy.
 
 ## Architecture evolution
 
@@ -414,18 +415,11 @@ python3 -m pip install -e ".[dev]"      # pytest + pypdf (tests read rendered CV
 PYTHONPATH=src python3 -m pytest tests/ -q
 ```
 
-The published suite has **1,620 tests** across 93 test files. In a fresh clone, without the git-ignored private data, the result is **1,586 passed, 34 skipped, 0 failed** (Python 3.14, with the optional `browser-test` extra installed so the offline browser tests run against a local headless Chrome). The skips are:
+The public release is tested from a separate snapshot containing only publishable files, without `data/local/`, the private Evidence Bank adapter or candidate facts. Validation: **2248 passed, 38 skipped, 0 failed**. A focused check after the final public-facing profile and helper-path cleanup also passed: **69 passed, 2 skipped, 0 failed**. Skips include optional local integration helpers and unavailable optional integrations.
 
-- tailoring-policy integration tests that need the private Evidence Bank or the private notes the policy is hashed against;
-- literal-leak checks that compare code against the real candidate's facts, which have nothing to compare against when those facts are absent;
-- tests of local operator helpers;
-- opt-in live tests: Browserbase cloud end-to-end runs (they need an API key and an explicit flag) and one live job-source test.
+Private-data integration checks and explicitly opt-in live probes skip when their inputs are absent. Install the optional `browser-test` extra and a local Chrome to exercise the offline browser suites. CI installs the `dev` extra and may skip browser modules.
 
-CI (`.github/workflows/tests.yml`, Python 3.12 and 3.13) installs only the `dev` extra. Without Playwright, the browser-test modules skip as whole modules: a fresh clone then gives **1,080 passed, 52 skipped**.
-
-On the development machine, where the private data and the local-only tests are present, the full suite gives **1,692 passed, 5 skipped**.
-
-No test contacts an ATS, Browserbase or any external service. Browser tests serve synthetic forms in-process to a local headless Chrome with every other hostname resolving to NOTFOUND. They cover the GraphQL read/write policy, autosave windows, non-fatal telemetry, the render wait, the CV-upload state machine (handle → storage → association → visible, plus its blocked and escalated paths), profile-link mapping, human handoff, guard release and teardown.
+The default offline suite does not contact an ATS or Browserbase. Browser tests serve synthetic forms in-process to a local headless Chrome with every other hostname resolving to NOTFOUND. They cover the GraphQL read/write policy, autosave windows, non-fatal telemetry, the render wait, the CV-upload state machine (handle → storage → association → visible, plus its blocked and escalated paths), profile-link mapping, human handoff, guard release and teardown.
 
 Coverage includes connector normalisation and pagination, Adzuna health and live-regression fixtures, Workday and Prospects parsing, snapshot/closure invariants, layered and cross-source dedup (including manual vs. automated), source precedence, graduation-year vs. intake-year handling, source and company coverage, company discovery, GitHub sync, promoted-profile rebuild protection, JD requirement extraction, project selection, claim grounding, CV structure / page budget / persistence, the review gate, application lifecycle invariants, dashboard pages and routes, and the optional intelligence layer (with a mocked provider).
 
@@ -435,6 +429,7 @@ Coverage includes connector normalisation and pagination, Adzuna health and live
 - The raw notes behind the tailoring policy and its regression fixture describe real past applications, so they stay local (`data/policies/sources/`, `tests/fixtures/sources/`). Only the derived YAML policy and test cases are published.
 - The curated Evidence Bank content for my own projects, and the enrichment tool that holds it, are local-only for the same reason.
 - The candidate's own facts used to answer application questions (contact details, address, immigration status, education, employment and self-declared answers) live in a git-ignored module, `src/jobintel/submission/candidate_facts_local.py`. The public code fails closed without it, and tests that assert the real values are local-only.
+- Per-job positioning overrides (`config/cv_positioning_overrides.json`), generated PDF/DOCX files and private Evidence Bank integration checks are excluded.
 - Submission ledgers, approvals, sealed bundles, claim tokens and the isolated browser profiles (`data/runtime/`) are git-ignored. Browser debug URLs, cookies, headers, form values and request bodies are never written to logs or evidence.
 - Screenshots use `jobintel.fixtures.sample_data` and a fictional test candidate ("Alex Example", `example.com` addresses, a placeholder phone number).
 - Credentials are only read from environment variables. Adzuna credential parameters are stripped from stored redirect URLs, and the Gemini key is sent in a request header.

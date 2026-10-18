@@ -1,0 +1,49 @@
+<!doctype html><html><head><title>Graduate Engineer - ExampleCo - Application</title></head><body>
+<!-- Synthetic Workable-style hosted application form (offline), shaped like the audited public page: first/last
+     name, email, phone (country preselected), a resume input whose own <label> is only "Choose file" and whose
+     aria-labelledby names "Resume"; selecting it POSTs the file once to the storage host, then shows its name;
+     a free-text location question; custom questions (right-to-work document, YES/NO radios, an essay), GDPR
+     consent. Page load sends the same-host challenge beacon and an error-report POST. Query: mode=ok |
+     storage_fail | extra_post | no_name -->
+<h1>Graduate Engineer</h1><div class="company">ExampleCo</div>
+<form id="application-form">
+  <h2>Personal information</h2>
+  <div><label for="firstname">* First name</label><input type="text" id="firstname" name="firstname" required></div>
+  <div><label for="lastname">* Last name</label><input type="text" id="lastname" name="lastname" required></div>
+  <div><label for="email">* Email</label><input type="email" id="email" name="email" required></div>
+  <div><label for="input_phone">* Phone</label><button type="button" aria-label="Change country for phone number, currently selected United Kingdom (+44)">+44</button>
+    <input type="tel" id="input_phone" name="phone" required></div>
+  <div><span><strong>*</strong><span id="res_label"><strong>Resume</strong></span></span>
+    <div data-role="dropzone"><label tabindex="0" role="button" for="input_files_input_res" id="description_input_res">Choose file</label>
+      <span>or drag and drop here</span>
+      <input tabindex="-1" id="input_files_input_res" type="file" aria-labelledby="res_label description_input_res" required>
+      <span id="resume-filename"></span></div></div>
+  <div><label><span id="loc_label"><strong>* Please can you confirm your current location?</strong></span>
+    <textarea id="loc" name="CA_1" aria-labelledby="loc_label" required></textarea></label></div>
+  <div><label for="rtw">* Please confirm the current right to work document you hold, eg. British passport, settled status</label>
+    <input type="text" id="rtw" name="CA_2" required></div>
+  <fieldset role="radiogroup" aria-labelledby="bg_label"><span id="bg_label">* Are you happy to proceed with background checks?</span>
+    <label><input type="radio" name="CA_3" value="true" required> YES</label><label><input type="radio" name="CA_3" value="false"> NO</label></fieldset>
+  <div><label for="why">* Why would ExampleCo regret not hiring you?</label><textarea id="why" name="QA_1" required></textarea></div>
+  <div><label><input type="checkbox" name="gdpr" id="gdpr"> I have read, understand and accept the Privacy Notice</label></div>
+  <button type="submit" id="btn-submit">Submit application</button>
+</form>
+<script>
+  const q = new URLSearchParams(location.search), mode = q.get("mode") || "ok";
+  fetch("/cdn-cgi/challenge-platform/h/g/jsd/oneshot/abc/0.1:2:tok/def", {method: "POST", body: "opaque"});
+  fetch("https://api.example-errors.test/api/1/item/", {method: "POST", body: "report"});
+  if (mode === "extra_post") fetch("/api/v1/telemetry", {method: "POST", body: "x"});
+  document.getElementById("application-form").addEventListener("submit", (e) => {
+    e.preventDefault(); document.body.dataset.submitted = "1"; fetch(location.pathname, {method: "POST", body: "final"});
+  });
+  document.getElementById("input_files_input_res").addEventListener("change", function () {
+    const f = this.files[0]; if (!f) return;
+    const fd = new FormData(); fd.append("key", "forms/abc/" + f.name); fd.append("x-mode", mode); fd.append("file", f, f.name);
+    const req = new XMLHttpRequest();
+    req.onreadystatechange = () => {
+      if (req.readyState !== 4) return;
+      if (req.status >= 200 && req.status < 300 && mode !== "no_name") document.getElementById("resume-filename").textContent = f.name;
+    };
+    req.open("POST", "https://forms.example-storage.test/", true); req.send(fd);
+  });
+</script></body></html>

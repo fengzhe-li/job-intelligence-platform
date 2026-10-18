@@ -660,6 +660,7 @@ def experience_payload(profile: CandidateProfile) -> list[dict]:
             "provenance_notes": list(item.provenance_notes),
             "evidence": [_experience_evidence_payload(evidence) for evidence in item.evidence],
             **({"master": [_experience_evidence_payload(unit) for unit in item.master]} if item.master else {}),
+            **({"cv_themes": list(item.cv_themes)} if item.cv_themes else {}),
         }
         for item in profile.experience
         if item.id
@@ -678,6 +679,7 @@ def _experience_from_payload(items: list[dict], sources: dict[str, EvidenceSourc
             provenance_notes=tuple(item.get("provenance_notes", ())),
             evidence=tuple(_experience_evidence_from_payload(evidence, sources) for evidence in item.get("evidence", [])),
             master=tuple(_experience_evidence_from_payload(unit, sources) for unit in item.get("master", [])),
+            cv_themes=tuple(item.get("cv_themes", ())),
         )
         for item in items
     ]

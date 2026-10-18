@@ -24,7 +24,7 @@ HANDOFF_RUNNER_STATUSES = frozenset({"ready_for_human_review", "needs_human_inpu
 def run_connected(connect_url, bundle, evidence, *, playwright_factory, connect_error, serve=None, write_allowlist=(),
                   keep_alive=False, live_host=None, graphql_reads=(), graphql_form_writes=(),
                   nonfatal_blocked_writes=(), screenshot_dir=None, close=None, release_guard_on_handoff=False,
-                  cv_upload=None):
+                  cv_upload=None, new_tab=False, on_page=None, page_security_writes=()):
     """Connect, run once, detach the guard, then close (or only disconnect for a handoff).
 
     `evidence` is the caller's evidence object (needs final_url, live, screenshot_sha256,
@@ -37,6 +37,12 @@ def run_connected(connect_url, bundle, evidence, *, playwright_factory, connect_
     its route handler is removed -- the guard is released in every frame so the HUMAN's own
     Submit works without a reload, then the automation disconnects. While the runner runs the
     guard is exactly as strict as without it. Off (Browserbase): the guard is never releasable.
+
+    `new_tab` (shared local browser): the runner gets a NEW tab of its own -- never an existing
+    page, so a tab handed to the human earlier is never touched again -- and `on_page(page)` binds
+    it (journals its target) before anything runs. A non-handoff outcome then closes only that
+    tab, never the browser. The runner's network guard and submit guard are page-scoped, so other
+    tabs (including handoff tabs the human is working in) are never intercepted.
     Returns the RunResult, or raises whatever the runner raised."""
     live = live_host is not None
     token = secrets.token_hex(32) if release_guard_on_handoff else None
@@ -50,17 +56,26 @@ def run_connected(connect_url, bundle, evidence, *, playwright_factory, connect_
             context = browser.contexts[0] if browser.contexts else browser.new_context()
             if serve is not None:
                 context.route("**/*", serve)
-            page = context.pages[0] if context.pages else context.new_page()
+            if new_tab:
+                page = context.new_page()
+                if on_page is not None:
+                    on_page(page)
+            else:
+                page = context.pages[0] if context.pages else context.new_page()
             if live:
                 result = browserbase_runner.run(page, bundle, write_allowlist=write_allowlist, live_host=live_host,
                                                 graphql_reads=graphql_reads, graphql_form_writes=graphql_form_writes,
                                                 nonfatal_blocked_writes=nonfatal_blocked_writes,
                                                 guard_release_token=token,
+                                                **({"page_security_writes": page_security_writes}
+                                                   if page_security_writes else {}),
                                                 **({"cv_upload": cv_upload} if cv_upload is not None else {}))
                 evidence.final_url = result.current_url  # already without query/fragment
                 evidence.live.update(stop_reason=result.stop_reason, blocked_requests=list(result.blocked_requests),
                                      allowed_requests=list(result.allowed_writes),
                                      nonfatal_blocked_requests=list(result.nonfatal_blocked_requests),
+                                     human_verification_seen=list(result.human_verification_seen),
+                                     foreign_submits_blocked=list(result.foreign_submits_blocked),
                                      form=browserbase_runner.form_diagnostics(result))
             else:
                 result = browserbase_runner.run(page, bundle, write_allowlist=write_allowlist,
@@ -89,5 +104,12 @@ def run_connected(connect_url, bundle, evidence, *, playwright_factory, connect_
                     # page back its own submit behaviour, then only disconnect (leaving `with`).
                     evidence.page_guard_released = browserbase_runner.release_submit_guard(page, token)
             if not evidence.handoff_kept:
-                (close or (lambda b: b.close()))(browser)  # handoff: only disconnect when leaving `with`
+                if new_tab:
+                    if page is not None:  # only this run's own tab; the shared browser stays
+                        try:
+                            page.close()
+                        except Exception:
+                            pass
+                else:
+                    (close or (lambda b: b.close()))(browser)  # handoff: only disconnect when leaving `with`
     return result

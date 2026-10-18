@@ -27,7 +27,7 @@ from jobintel.matching.cv_generation import resolve_cv_pdf
 from jobintel.storage.cv_artifact_store import CVArtifactStore
 
 EXPORT_DIR_ENV = "JOBINTEL_CV_EXPORT_DIR"
-MAX_SEGMENT = 40
+MAX_SEGMENT = 60
 
 
 @dataclass(frozen=True)
@@ -49,19 +49,78 @@ def default_export_dir() -> Path:
 
 
 def _segment(text: str | None) -> str:
-    """ASCII letters/digits/hyphens only; words joined by '-'; lower-case-only input title-cased."""
+    """ASCII letters/digits only, words joined by '_', original casing kept (lower-case-only input,
+    e.g. a board slug, is title-cased). Capped at MAX_SEGMENT characters on a word boundary."""
     ascii_text = unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode()
+    ascii_text = re.sub(r"(?i)(\.pdf)+$", "", ascii_text.strip())
     words = re.findall(r"[A-Za-z0-9]+", ascii_text)
     if ascii_text == ascii_text.lower():
         words = [w[:1].upper() + w[1:] for w in words]
-    return "-".join(words)[:MAX_SEGMENT].strip("-")
+    out = ""
+    for word in words:
+        if len(out) + len(word) + (1 if out else 0) > MAX_SEGMENT:
+            break
+        out = f"{out}_{word}" if out else word
+    return out or "_".join(words)[:MAX_SEGMENT]
 
 
-def review_filename(full_name: str, company: str | None = None, role: str | None = None) -> str:
-    """`<First_Last>_CV.pdf`, or `<First_Last>_<Company>_<Role>_CV.pdf` for a job-specific CV."""
-    name = "_".join(filter(None, (_segment(part) for part in (full_name or "").split())))
-    parts = [name or "Candidate", *filter(None, (_segment(company), _segment(role))), "CV"]
-    return "_".join(parts) + ".pdf"
+# A role title's main part ends at the first spaced dash or pipe; what follows is a team, location
+# or other qualifier ("Forward Deployed Engineer - Software Engineer - United Kingdom").
+_ROLE_QUALIFIER = re.compile(r"\s+[-\u2013\u2014|]\s+")
+
+
+def _role_title(role: str | None) -> str:
+    return _ROLE_QUALIFIER.split((role or "").strip(), maxsplit=1)[0]
+
+
+def company_display_name(company: str | None, registry_path: Path | str = "config/target_companies.json") -> str | None:
+    """The registry's `company_name` for a stored company slug/token (e.g. `elevenlabs` ->
+    `ElevenLabs`), else the stored name unchanged. Read-only; a missing or unreadable registry is
+    simply not used."""
+    if not company:
+        return company
+    key = company.strip().casefold()
+    try:
+        entries = json.loads(Path(registry_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return company
+    token_fields = ("company_name", "connector_token", "ashby_board_name", "greenhouse_board_token",
+                    "lever_site_token", "smartrecruiters_company_identifier", "workable_account")
+    for entry in entries if isinstance(entries, list) else ():
+        tokens = {str(entry.get(f)).strip().casefold() for f in token_fields if isinstance(entry, dict) and entry.get(f)}
+        if key in tokens and isinstance(entry.get("company_name"), str) and entry["company_name"].strip():
+            return entry["company_name"].strip()
+    return company
+
+
+def review_filename(full_name: str, company: str | None = None, role: str | None = None, *,
+                    max_length: int | None = None) -> str:
+    """`<First_Last>_CV.pdf`, or `<First_Last>_<Company>_<Role>_CV.pdf` for a job-specific CV:
+    words joined by '_', punctuation dropped, the role's trailing team/location qualifier dropped.
+    Deterministic for the same inputs. With `max_length`, trailing role words (then company words)
+    are dropped on word boundaries until the name fits; the candidate name and `_CV.pdf` stay."""
+    name = "_".join(filter(None, (_segment(part) for part in (full_name or "").split()))) or "Candidate"
+    company_words = (_segment(company) or "").split("_")
+    role_words = (_segment(_role_title(role)) or "").split("_")
+    build = lambda: "_".join([name, *filter(None, ("_".join(filter(None, company_words)),
+                                                   "_".join(filter(None, role_words)))), "CV"]) + ".pdf"
+    out = build()
+    while max_length is not None and len(out) > max_length and any(filter(None, company_words + role_words)):
+        (role_words if any(role_words) else company_words).pop()
+        out = build()
+    return out
+
+
+# The name the ATS shows for an uploaded CV: the review copy's naming, capped to what the browser
+# runner accepts as a plain upload file name.
+ATS_UPLOAD_FILENAME_MAX = 80
+
+
+def ats_upload_filename(full_name: str, company: str | None, role: str | None) -> str:
+    """`<First_Last>_<Company>_<Role>_CV.pdf` for an ATS upload: review_filename, with the company's
+    registry display name, capped at ATS_UPLOAD_FILENAME_MAX. Only the name; the bytes are always the
+    sealed CV."""
+    return review_filename(full_name, company_display_name(company), role, max_length=ATS_UPLOAD_FILENAME_MAX)
 
 
 def _sha256(path: Path) -> str:

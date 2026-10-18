@@ -61,8 +61,8 @@ class ManualSourceConnector(JobSourceConnector):
             payload = {**record, "_ingestion_method": record.get("_ingestion_method") or "manual_import"}
             if not _is_relevant(payload, query):
                 continue
-            source_id = _source_job_id(payload) or f"manual-{index}"
             source_url = _source_url(payload)
+            source_id = _source_job_id(payload) or _url_job_id(source_url) or f"manual-{index}"
             apply_url = _application_url(payload) or source_url
             raw_jobs.append(
                 RawJobPayload(
@@ -328,6 +328,13 @@ def _normalise_manual_record(record: dict[str, Any], ingestion_method: str) -> d
 
 def _source_job_id(payload: dict[str, Any]) -> str:
     return _first_text(payload.get("source_job_id"), payload.get("job_id"), payload.get("reference"))
+
+
+def _url_job_id(url: str) -> str:
+    """A stable id for a record that names no id of its own: from its posting URL, so two separate one-URL
+    imports never share the per-run index id ("manual-1") and merge into one job (2026-10-16)."""
+    import hashlib
+    return f"manual-{hashlib.sha256(url.strip().encode()).hexdigest()[:12]}" if url and url.strip() else ""
 
 
 def _source_url(payload: dict[str, Any]) -> str:

@@ -235,6 +235,21 @@ def main() -> None:
     github_sync_cmd.add_argument("--name", default="Personal Candidate")
     github_sync_cmd.add_argument("--graduation-year", type=int, default=2026, help="Candidate's actual degree completion year")
 
+    capmap_cmd = subparsers.add_parser(
+        "github-capability-map",
+        help="Build a project's JD-independent repository capability map from its own files at HEAD (never executes repo code)")
+    capmap_cmd.add_argument("--repo", action="append", required=True, help="Exact owner/name (repeatable)")
+    capmap_cmd.add_argument("--checkout", help="Optional local checkout (single --repo) whose origin is exactly that repository")
+    capmap_cmd.add_argument("--store", default="data/local")
+
+    code_evidence_cmd = subparsers.add_parser(
+        "github-code-evidence",
+        help="Record a project's own repository import/dependency lines for named terms (pinned commit; never executes repo code)")
+    code_evidence_cmd.add_argument("--repo", required=True, help="Exact owner/name of the project's repository")
+    code_evidence_cmd.add_argument("--term", action="append", required=True, help="Library/technology to look for (repeatable)")
+    code_evidence_cmd.add_argument("--checkout", help="Optional local checkout whose origin is exactly this repository")
+    code_evidence_cmd.add_argument("--store", default="data/local")
+
     application_create = subparsers.add_parser("application-create", help="Create (or return) the one tracked application for a canonical stored job")
     application_create.add_argument("--job-id", required=True, help="Canonical job id in the local job store; company, title, URL, JD, sources and deadline all come from that Job")
     application_create.add_argument("--store", default="data/local")
@@ -372,10 +387,15 @@ def main() -> None:
     dashboard.add_argument("--registry", default="config/target_companies.json")
 
     from jobintel.submission.cli import add_submission_commands, run_submission_command
+    from jobintel.pipeline.batch_cli import add_batch_commands, run_batch_command
     add_submission_commands(subparsers)
+    add_batch_commands(subparsers)
     args = parser.parse_args()
     if args.command.startswith("submission-"):
         run_submission_command(args, parser)
+        return
+    if args.command.startswith("batch-"):
+        run_batch_command(args)
         return
     if args.command == "ingest":
         _ingest(args)
@@ -419,6 +439,20 @@ def main() -> None:
         _manual_job_import(args)
     elif args.command == "github-sync":
         _github_sync(args)
+    elif args.command == "github-capability-map":
+        from jobintel.repo_capability_map import build_map, save_map
+        if args.checkout and len(args.repo) != 1:
+            raise SystemExit("--checkout needs exactly one --repo")
+        for repo in args.repo:
+            record = build_map(repo, checkout=args.checkout)
+            save_map(args.store, record)
+            print(json.dumps({"repository": repo, "commit": record["commit"], "files_scanned": record["files_scanned"],
+                              "slices": [(s["id"], s["grade"]) for s in record["slices"]],
+                              "documented_only": record["documented_only"]}))
+    elif args.command == "github-code-evidence":
+        from jobintel.repo_code_evidence import collect
+        record = collect(args.store, args.repo, args.term, checkout=args.checkout)
+        print(json.dumps({"repository": args.repo, **record}, indent=2))
     elif args.command == "application-create":
         _application_create(args)
     elif args.command == "application-status":
@@ -863,6 +897,7 @@ def _github_sync(args: argparse.Namespace) -> None:
         limit=args.limit,
         name=args.name,
         graduation_year=args.graduation_year,
+        build_capability_maps=True,  # read each changed repository's own files, not only its README
     )
     print(f"Repositories discovered: {result.repositories_discovered}")
     print(f"Repositories synced (new/changed): {result.repositories_synced}")
@@ -870,6 +905,14 @@ def _github_sync(args: argparse.Namespace) -> None:
     print(f"Capabilities extracted: {result.capabilities_extracted}")
     for name in result.synced_repository_names:
         print(f"  synced: {name}")
+    for name, error in result.capability_map_errors.items():
+        print(f"  capability map NOT refreshed: {name}: {error}")
+    from jobintel.profile_ingestion import load_candidate_profile
+    from jobintel.repo_capability_map import live_head, stale_maps
+    profile = load_candidate_profile(args.store)
+    repos = sorted({p.repository_full_name for p in (profile.projects if profile else []) if p.repository_full_name})
+    for stale in stale_maps(args.store, {name: live_head(name) for name in repos}):
+        print(f"  capability map stale: {stale['repository']} map={stale['map_commit']} live={stale['live_head']}")
 
 
 def _application_create(args: argparse.Namespace) -> None:
@@ -1016,11 +1059,12 @@ def _cv_generate(args: argparse.Namespace) -> None:
 
 
 def _review_export(store: str, artifact_id: str, application=None, generic: bool = False):
-    from jobintel.matching.cv_review_export import export_cv_for_review, review_filename
+    from jobintel.matching.cv_review_export import company_display_name, export_cv_for_review, review_filename
     candidate = load_candidate_profile(store)
     if candidate is None:
         raise ValueError("no candidate profile to name the copy")
-    company, role = (None, None) if generic or application is None else (application.company, application.role_title)
+    company, role = ((None, None) if generic or application is None
+                     else (company_display_name(application.company), application.role_title))
     return export_cv_for_review(store, artifact_id, review_filename(candidate.name, company, role),
                                 application_id=application.id if application is not None else None)
 

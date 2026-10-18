@@ -190,7 +190,7 @@ def test_modified_bundle_blocks_supervised_handoff(setup):
                                    "Cover letter", "Motivation", "Why do you want to join us?", "Visa status"])
 def test_sensitive_questions_always_escalate(setup, label):
     package = sealed_package(setup)
-    assert escalation_reason(label).startswith("sensitive:")
+    assert escalation_reason(label).startswith(("sensitive:", "human_only:work_authorisation:"))
     for field in airtap.LABELS:
         assert question(package, field, label, "form", "screen")["status"] == "needs_human_input"
 

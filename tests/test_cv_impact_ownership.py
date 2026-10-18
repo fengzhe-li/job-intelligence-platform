@@ -462,3 +462,74 @@ def test_Y_historical_artifacts_stay_byte_identical(tmp_path):
 def _tmp() -> Path:
     import tempfile
     return Path(tempfile.mkdtemp(prefix="impact-cv-"))
+
+
+# --- repository corroboration gate (verified / partial / contradicted / unavailable) --------------------
+
+def _gate(text, *, readme, indexed="", forbidden=(), strengthened=True):
+    bullets = [("p", text, ["p:1"])]
+    claims, per_bullet = iw.corroborate(bullets, POLICY, repo_text={"p": readme}, project_evidence_text={"p": indexed},
+                                        project_forbidden={"p": set(forbidden)}, strengthened={text} if strengthened else set())
+    report = {"corroboration": claims, "claim_corroboration": per_bullet}
+    return per_bullet[0]["status"], {c["claim"]: c["status"] for c in claims}, iw.writing_review_reasons(report, [])
+
+
+def test_corroboration_verified_passes():
+    status, claims, reasons = _gate("Built a FastAPI service with Docker.", readme="FastAPI service, Docker Compose.")
+    assert status == "verified" and claims == {"FastAPI": "verified", "Docker": "verified"} and reasons == []
+
+
+def test_corroboration_readme_silent_but_indexed_evidence_is_partial_not_false():
+    status, claims, reasons = _gate("Built a FastAPI service with Pydantic request models.", readme="FastAPI service.",
+                                    indexed="FastAPI layer with Pydantic request models.")
+    assert status == "partial" and claims["Pydantic"] == "partial"
+    assert any("same-project indexed evidence only" in r and "p:Pydantic" in r for r in reasons)
+
+
+def test_corroboration_recorded_exclusion_or_no_support_is_contradicted():
+    status, claims, reasons = _gate("Built a FastAPI service with async worker processing.", readme="FastAPI service.",
+                                    indexed="FastAPI service.", forbidden={"async worker"})
+    assert status == "contradicted" and claims["async worker"] == "contradicted"
+    assert any(r.startswith("Claim(s) contradicted") for r in reasons)
+    status, claims, _ = _gate("Built a pipeline with Polars.", readme="A pipeline in Python.", indexed="A pipeline in Python.")
+    assert status == "contradicted" and claims["Polars"] == "contradicted"   # supported by nothing in the project
+
+
+def test_corroboration_unavailable_fails_closed_only_for_strengthened_claims():
+    status, claims, reasons = _gate("Built an event-driven backend with MQTT.", readme=None, indexed="MQTT backend")
+    assert status == "unavailable" and set(claims.values()) == {"unavailable"}
+    assert any(r.startswith("Strengthened claim(s) whose project repository cannot be checked") for r in reasons)
+    _, _, verbatim = _gate("Event-driven backend with MQTT.", readme=None, indexed="MQTT backend", strengthened=False)
+    assert not any("cannot be checked" in r for r in verbatim)
+
+
+def test_a_rewrite_that_adds_a_recorded_exclusion_is_rejected():
+    project = Project(id="proj", name="Project", description="", forbidden_extrapolations=["async worker"])
+    evidence = [CapabilityEvidence(source=README, quote="FastAPI layer with structured errors.", project_id="proj", id="proj:1")]
+    check = lambda text: validate_bullet_claim(text, project, evidence, CandidateProfile(id="c", name="S", graduation_year=2026)).rejection_reasons
+    problems = iw.rewrite_problems("FastAPI layer with structured errors.", "Built a FastAPI layer with async worker processing.", POLICY, check)
+    assert "grounding:forbidden_extrapolation:async worker" in problems
+
+
+def test_summary_generic_items_are_narrowed_grammatically():
+    summary = ("Graduate engineer with experience building backend systems, cloud applications and AI-powered platforms "
+               "using Python. Skilled in REST APIs, distributed systems, databases and AI/ML applications.")
+    narrowed, removed, _ = iw.narrow_summary(summary, "REST API backend", POLICY)
+    assert narrowed == ("Graduate engineer with experience building backend systems and cloud applications using Python. "
+                        "Skilled in REST APIs, databases and AI/ML applications.")
+    assert removed == ["distributed systems", "AI-powered platforms"]
+
+
+def test_language_claims_are_decided_by_the_repository_languages_record():
+    bullets = [("p", "Developed C and Python socket utilities.", ["p:1"])]
+    claims, per_bullet = iw.corroborate(bullets, POLICY, repo_text={"p": "Socket utilities."}, project_evidence_text={"p": ""},
+                                        repo_languages={"p": {"python", "shell"}}, strengthened=set())
+    statuses = {c["claim"]: c["status"] for c in claims}
+    assert statuses["Python"] == "verified" and statuses["C"] == "contradicted"   # repo has no C at all
+    assert per_bullet[0]["status"] == "contradicted"
+
+
+def test_layer_and_validator_openings_become_action_first():
+    assert compose("Thin FastAPI REST layer over the orchestrator.").rewritten_text == "Built a thin FastAPI REST layer over the orchestrator."
+    assert compose("Deterministic evidence validator that checks quotes.").rewritten_text == (
+        "Implemented a deterministic evidence validator that checks quotes.")

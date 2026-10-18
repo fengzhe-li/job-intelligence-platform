@@ -149,6 +149,9 @@ class Experience:
     # The authoritative long-form experience master, kept verbatim (one unit per
     # fact-source bullet). It is the fact source, never a fixed bullet list.
     master: tuple[ExperienceEvidence, ...] = ()
+    # CV themes (matching.cv_editorial.theme_for) this role is shown for; empty = every CV. A role
+    # gated this way still appears when the JD names its kind of work (see cv_generation).
+    cv_themes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

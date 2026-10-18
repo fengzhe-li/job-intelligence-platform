@@ -56,11 +56,12 @@ CV_IMPACT_OWNERSHIP_V1:
     head_noun_verbs:
       Built: [backend, service, api, application, app, platform, system, framework, prototype,
               setup, testbed, harness, simulator, dashboard, website, server, stack, cli, tool,
-              pipeline, workflow]
+              pipeline, workflow, layer]
       Developed: [utilities, utility, scripts, script, drivers, driver, library, module, modules,
                   tools, components, functions, frontend, interface, package, client]
       Implemented: [algorithm, algorithms, persistence, ingestion, retrieval, protocol, logic,
-                    firmware, mechanism, cache, parser, scheduler, classifier, model, engine, core]
+                    firmware, mechanism, cache, parser, scheduler, classifier, model, engine, core,
+                    validator]
       Defined: [schemas, schema, contracts, contract]
       Designed: [design, architecture]
     # Verbs that describe the same act of making an artifact; when one opens more than
@@ -250,36 +251,63 @@ CV_IMPACT_OWNERSHIP_V1:
     level: L4
     tags: [debugging, failure_diagnosis]
 
-  # The JD archetype decides which verified value is foregrounded, never the truth.
+  # The JD archetype decides which verified value is foregrounded, never the truth. Matched in
+  # order: title_terms first (whole words), then the tailoring skill's archetype; backend otherwise.
+  # experience_signals: internship-statement wording this archetype prefers when choosing which
+  # supported statements to show. Selection only -- nothing is ever reworded or added -- so
+  # delivery / collaboration evidence surfaces for roles that ask for it, not on every CV.
   archetypes:
     forward_deployed_ai:
       title_terms: [forward deployed, forward-deployed, solutions engineer, solutions architect,
-                    customer engineer, deployment engineer, field engineer, fde]
+                    customer engineer, deployment engineer, field engineer, fde, integration engineer,
+                    implementation engineer]
       foreground: [api, integration, source_grounding, data_contracts, failure_handling, delivery,
                    debugging]
+      experience_signals: ['\bcollaborat\w*', '\bwork(?:ed|ing)? with\b', '\bcolleagues\b',
+                           '\bclarify\w* (?:data )?requirements\b', '\binvestigat\w*', '\btroubleshoot\w*',
+                           '\bdiscrepanc\w*', '\bconfigur\w*', '\bworkflows?\b', '\boperational\b',
+                           '\bintegrat\w*', '\brepeatab\w*']
       guardrail: Do not invent customer delivery or client ownership.
     automation_embedded:
       title_terms: [automation, embedded, firmware, controls, mechatronics, robotics, automotive,
                     hardware, test engineer, instrumentation]
       foreground: [hardware_integration, embedded, validation, deterministic_control, debugging,
                    automation, data_validation]
+      experience_signals: ['\bautomat\w*', '\btest\w*', '\bvalidat\w*', '\btroubleshoot\w*',
+                           '\brecognition\b']
       guardrail: Do not infer PLC, industrial robotics or road-tested autonomy.
+    cloud_devops:
+      title_terms: [cloud, devops, site reliability, aws]
+      foreground: [integration, data_pipeline, reproducibility, packaging, reliability_mechanism,
+                   failure_diagnosis, delivery]
+      experience_signals: ['\bmonitor\w*', '\bdeploy\w*', '\bautomat\w*', '\bconfigur\w*',
+                           '\btroubleshoot\w*', '\bmaintenance\b', '\brepeatab\w*']
+      guardrail: Do not infer production operation, on-call or SRE ownership.
     platform_systems:
+      title_terms: [platform, infrastructure, systems engineer, linux, network engineer]
       from_tailoring: [platform_cloud_systems]
       foreground: [linux, networking, reproducibility, failure_diagnosis, state_handling,
                    reliability_mechanism, packaging]
+      experience_signals: ['\bconfigur\w*', '\btroubleshoot\w*', '\bsystems?\b', '\bnetwork\w*',
+                           '\bmonitor\w*', '\bmaintenance\b']
       guardrail: Do not infer SRE, on-call or high availability.
     fullstack:
       from_tailoring: [fullstack]
       foreground: [end_to_end, frontend, api, persistence, testing, delivery]
+      experience_signals: ['\bapplications?\b', '\btest\w*', '\bdatabases?\b', '\bsql\b']
     ai_applied:
+      title_terms: [ai, ml, machine learning, llm, genai, applied scientist]
       from_tailoring: [ai_applied_ai]
       foreground: [source_grounding, data_contracts, failure_handling, validation, api]
+      experience_signals: ['\brecognition\b', '\bdataset\w*', '\bannotat\w*', '\bvalidat\w*',
+                           '\btest\w* (?:recognition )?results\b', '\bpython\b']
       guardrail: Model/API presence alone is not the achievement.
     backend:
       from_tailoring: [backend_general_swe, fintech, motorsport]
       foreground: [api, data_contracts, correctness, persistence, failure_handling, testing,
                    packaging]
+      experience_signals: ['\bsql\b', '\bdatabases?\b', '\bvalidat\w*', '\btest\w*', '\bpython\b',
+                           '\bconsisten\w*', '\brecords?\b']
 
   metrics:
     # Ordered: the first matching rule classifies a span. Every metric keeps its verbatim text.
@@ -357,13 +385,25 @@ CV_IMPACT_OWNERSHIP_V1:
       customer-deployment: 'customer[- ](?:deploy\w*|facing delivery|delivery|adoption)|deployed (?:to|for|at) (?:customers?|clients?)|client[- ]facing'
       trained-llm: 'trained (?:an? |its own |our own )?(?:llm|large language model|foundation model)'
       team-leadership: '(?:led|owned|managed|headed|ran) (?:a |the |an )?(?:\w+[- ])?team'
-      production-deployment: 'deployed (?:to|in|into) production|in production\b|production deployment'
+      production-deployment: 'deployed (?:\w+ ){0,3}(?:to|in|into) production|in production\b|production deployment|production (?:use|users|environment)'
+      # Delivery / commercial scope the candidate's evidence does not state: rejected on a project
+      # bullet and flagged on any rewrite unless the bullet's own evidence says it.
+      customer-facing: 'customer[- ]facing|customer[- ]focused delivery|with (?:customers|clients)\b|for (?:customers|clients)\b'
+      client-ownership: 'client (?:ownership|delivery|engagements?|accounts?|relationships?)|owned (?:the )?client'
+      stakeholder-management: 'stakeholder (?:management|engagement)|manag\w* stakeholders?'
+      consulting: '\bconsult(?:ing|ancy|ed)\b'
+      commercial-impact: 'commercial (?:impact|value|outcomes?)|revenue|cost savings?|saved \S+ in costs?'
+      business-transformation: 'business transformation|transform\w* the business|digital transformation'
+      user-adoption: '(?:user|customer) adoption|adopted by (?:users|customers|teams)|\d[\d,]* (?:active )?users\b'
 
   summary:
     # Enumeration items in the authored summary that make an unsupported scope/performance claim
     # are dropped (narrowing only); generic phrasing is reported, never reworded.
     unsupported_scope_items: ['distributed systems?', 'microservices?', 'large[- ]scale', 'high[- ]throughput',
                               'low[- ]latency', 'real[- ]time', 'production[- ]grade', 'enterprise']
+    # Generic enumeration items dropped from the authored summary regardless (they claim nothing the
+    # projects state concretely); reported as removed. Narrowing only -- nothing is ever added.
+    generic_items: ['ai[- ]powered platforms?', 'cutting[- ]edge (?:systems|solutions|platforms)']
     generic_phrases: ['ai[- ]powered', 'cutting[- ]edge', 'state[- ]of[- ]the[- ]art', 'passionate',
                       'results[- ]driven', 'innovative']
 
@@ -376,6 +416,23 @@ CV_IMPACT_OWNERSHIP_V1:
                       'dedup\w*', 'retry', 'guard\w*', 'ci\b', 'docker', 'sql', 'pandas']
     max_verb_repeats: 3
     repeated_ngram: 4
+    # Repository corroboration of risky claims and named technologies, per bullet:
+    #   verified      found in the project's own cached repository README
+    #   partial       README silent, but stated by same-project indexed evidence (Evidence Bank)
+    #   contradicted  matches a recorded exclusion (forbidden extrapolation) of that project/evidence,
+    #                 or is supported by neither the README nor same-project indexed evidence
+    #   unavailable   the project's README cannot be read (no cache / renamed repository)
+    # README missing is never treated as false; but a newly strengthened claim never silently passes.
+    corroboration_actions:
+      verified: pass
+      partial: review
+      contradicted: reject
+      unavailable: review_if_strengthened
+    # Programming-language claims are also checked against the repository's GitHub languages record
+    # (same-project repository evidence): listed -> verified; not listed -> contradicted.
+    language_terms: {python: Python, c: C, c++: C++, java: Java, go: Go, golang: Go, rust: Rust,
+                     typescript: TypeScript, javascript: JavaScript, bash: Shell, shell: Shell, kotlin: Kotlin,
+                     scala: Scala, ruby: Ruby, php: PHP, swift: Swift, r: R, matlab: MATLAB}
     # Claims to corroborate against the project's own cached repository README when present.
     corroboration_terms: ['async', 'worker', 'pydantic v2', 'immutable', 'offsets?', 'deploy\w*',
                           'keras', '\brag\b', 'citations?', 'qdrant', 'kubernetes', 'kafka', 'polars',

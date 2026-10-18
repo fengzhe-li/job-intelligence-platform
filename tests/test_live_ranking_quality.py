@@ -319,3 +319,11 @@ def _component(result, name: str):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_an_explicit_senior_title_outranks_a_numeric_ladder_suffix():
+    from jobintel.analysis.job_quality import extract_seniority
+    assert extract_seniority("Senior Software Engineer I", "").level == "senior"
+    assert extract_seniority("Senior Backend Software Engineer I - Payments", "").level == "senior"
+    assert extract_seniority("Software Engineer I", "").level == "junior"  # the ladder alone still applies
+    assert extract_seniority("Software Engineer II", "").level == "mid-level"

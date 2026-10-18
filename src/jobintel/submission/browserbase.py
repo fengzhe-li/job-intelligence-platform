@@ -100,6 +100,7 @@ def build_request(package: ApprovedSubmissionPackage, a: BrowserbaseBundleAuthor
         "job_id": package.job_id,
         "application_url": package.application_url,
         "company": package.company,
+        "expected_company_names": list(package.expected_company_names),
         "role": package.role,
         "cv": {"artifact_id": package.cv_artifact_id, "sha256": package.cv_pdf_sha256, "path": CV_FILE,
                "upload_confirmation_required": True, "remote_integrity_verified": False},

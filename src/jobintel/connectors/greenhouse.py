@@ -5,6 +5,7 @@ from typing import Any
 
 from jobintel.connectors.base import ConnectorQuery, JobSourceConnector, RawJobPayload, ScopeCollector, SourceHealth, SourceSnapshot
 from jobintel.connectors.utils import fetch_json, normalise_location, now_utc, parse_datetime, strip_html, text_or_none
+from jobintel.submission.hosted_urls import hosted_application_url
 from jobintel.models.job import Job, SourceObservation
 
 
@@ -51,7 +52,7 @@ class GreenhouseConnector(JobSourceConnector):
                         source_name=self.source_name,
                         source_job_id=str(item["id"]),
                         source_url=source_url,
-                        canonical_application_url=source_url,
+                        canonical_application_url=hosted_application_url(source_url),
                         raw_payload={**item, "_board_token": token},
                         observed_at=observed_at,
                         posted_at=parse_datetime(item.get("updated_at")),

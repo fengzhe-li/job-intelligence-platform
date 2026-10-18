@@ -46,6 +46,17 @@ in `nonfatal_blocked_requests` (method/host/path/resource type only); it just do
 run. Every other blocked write stays fatal: anything on the application host, unknown or final
 GraphQL operations, and any write to an unlisted host.
 
+Page-security infrastructure (`page_security_writes`, opt-in, local live runs): exact (method, host,
+path) entries for the bot-management / CAPTCHA BOOTSTRAP requests a hosted form needs merely to load
+(e.g. a same-host Cloudflare challenge-platform beacon, an hCaptcha site-config check). They pass
+through only as xhr/fetch (never a navigation), only before the result is decided, and only when the
+body carries no sealed answer value and no CV bytes (otherwise refused, fatal). A same-host entry may
+only name the Cloudflare challenge-platform path prefix; a third-party entry is one exact path. Any
+OTHER write to a CAPTCHA host (a challenge fetch, a verification/answer post) is aborted, recorded as
+`captcha_challenge` and stops the run at human handoff (`captcha_requires_human`): the runner never
+solves, bypasses, fakes or injects a CAPTCHA, and never uses a solving service. CAPTCHA frames are
+never scanned or touched.
+
 CV in live-host mode: by default the runner never selects a file on a real host (selecting one
 makes the page start its own upload flow, e.g. an upload-handle mutation and a storage host). A
 CV/resume file control is left untouched and marked `human_required`; the run continues with the
@@ -143,22 +154,36 @@ SUPPORTED_TEXT_TYPES = frozenset({"text", "email", "tel", "url", "search", ""})
 DATE_FORMATS = {"date": re.compile(r"\d{4}-\d{2}-\d{2}"), "month": re.compile(r"\d{4}-\d{2}")}
 WRITE_METHODS = frozenset({"POST", "PUT", "PATCH"})
 MAX_NONFATAL_BLOCKED_WRITES = 3
+MAX_PAGE_SECURITY_WRITES = 6
+# The only same-host path a page-security entry may name (Cloudflare bot management on the form's own host).
+SAME_HOST_SECURITY_PREFIXES = ("/cdn-cgi/challenge-platform/",)
+# Hosts whose frames/writes belong to a CAPTCHA widget: never touched; unlisted writes stop for a human.
+CAPTCHA_HOST_SUFFIXES = ("hcaptcha.com", "recaptcha.net", "challenges.cloudflare.com")
 _DNS_HOST = re.compile(r"(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}")
 
 # Installed before any page script runs, in every frame. Blocks every form-submission path
 # and records it; shadow roots get the same capturing listener (submit events do not cross them).
 SUBMIT_GUARD_SCRIPT = """
 (() => {
+  // A human-verification provider's own frame (Cloudflare Turnstile, hCaptcha, reCAPTCHA) is never
+  // instrumented: the runner does not touch a verification widget's environment in any way.
+  if (/(^|\\.)(challenges\\.cloudflare\\.com|hcaptcha\\.com|recaptcha\\.net)$/.test(location.hostname)) return;
   const releaseToken = __JOBINTEL_RELEASE_TOKEN__;  // null: this guard can never be released
   let active = true;
   const blocked = [];
+  // A form whose action is on ANOTHER host (e.g. a third-party "apply with ..." widget bootstrapping its own
+  // frame) is still blocked -- nothing is sent -- but recorded apart: it is not an application submit.
+  const foreign = [];
   Object.defineProperty(window, '__jobintelBlockedSubmits', {value: blocked, writable: false});
-  const record = (how) => blocked.push(how);
-  const stop = (event) => { if (!active) return; event.preventDefault(); event.stopImmediatePropagation(); record('submit event'); };
+  Object.defineProperty(window, '__jobintelForeignSubmits', {value: foreign, writable: false});
+  const offHost = (form) => { try { const a = form && form.getAttribute && form.getAttribute('action');
+    if (!a) return ''; const u = new URL(a, location.href); return u.host !== location.host ? u.host : ''; } catch (e) { return ''; } };
+  const record = (how, form) => { const host = offHost(form); if (host) foreign.push(how + ' -> ' + host); else blocked.push(how); };
+  const stop = (event) => { if (!active) return; event.preventDefault(); event.stopImmediatePropagation(); record('submit event', event.target); };
   const original = {submit: HTMLFormElement.prototype.submit, requestSubmit: HTMLFormElement.prototype.requestSubmit,
                     attachShadow: Element.prototype.attachShadow};
-  HTMLFormElement.prototype.submit = function () { record('form.submit()'); };
-  HTMLFormElement.prototype.requestSubmit = function () { record('form.requestSubmit()'); };
+  HTMLFormElement.prototype.submit = function () { record('form.submit()', this); };
+  HTMLFormElement.prototype.requestSubmit = function () { record('form.requestSubmit()', this); };
   window.addEventListener('submit', stop, true);
   const guarded = new WeakSet();
   const roots = [];
@@ -241,6 +266,29 @@ COLLECT_SCRIPT = """
     }
     return '';
   };
+  // The control's OWN helper text (location semantics only): its aria-describedby text, then
+  // description/hint text inside the nearest container that holds ONLY this control, stopping at the
+  // container that holds its label/title (the field's own entry). Section instructions outside that
+  // entry, other controls' text, listbox options and the label itself are never included.
+  const HELPER = 'p, small, [class*="description" i], [class*="helper" i], [class*="hint" i], [class*="subtitle" i], '
+               + '[id*="description" i], [id*="helper" i], [id*="hint" i]';
+  const helperFor = (el) => {
+    const parts = [];
+    const described = el.getAttribute('aria-describedby');
+    if (described) parts.push(textOf(el.getRootNode(), described));
+    const own = labelEl(el);
+    let node = el.parentElement;
+    for (let i = 0; node && i < 6; i++, node = node.parentElement) {
+      const fields = [...node.querySelectorAll('input:not([type=hidden]), select, textarea')];
+      if (!fields.every((f) => f === el)) break;
+      const found = [...node.querySelectorAll(HELPER)].filter((h) => h !== own && !h.contains(el)
+        && !h.matches(TITLE) && !h.closest('[role=listbox], [role=option], label')
+        && !h.querySelector('input, select, textarea, label, ' + TITLE) && norm(h.innerText));
+      if (found.length) { parts.push(...found.map((h) => norm(h.innerText))); break; }
+      if ((own && node.contains(own)) || node.querySelector('label, ' + TITLE)) break;
+    }
+    return norm([...new Set(parts.filter(Boolean))].join(' ')).slice(0, 300);
+  };
   const invalid = (el) => el.getAttribute('aria-invalid') === 'true'
     || (el.willValidate && !el.validity.valid && !el.validity.valueMissing);
   const controls = []; const groups = {};
@@ -274,10 +322,26 @@ COLLECT_SCRIPT = """
         g.options.push({marker: mark(el, 'data-jobintel-control', 'c'), text: labelFor(el), value: el.value});
         continue;
       }
+      let label = labelFor(el) || containerLabel(el, (f) => f === el);
+      let fileRequired = required;
+      if (type === 'file' && /^(?:attach|upload|browse|choose(?: a)? file|select(?: a)? file)$/i.test(label)) {
+        // The input's own label is only its button's verb ("Attach"): the question is its group's title.
+        const group = el.closest('[role=group][aria-labelledby]');
+        const own = el.getAttribute('aria-labelledby') ? textOf(el.getRootNode(), el.getAttribute('aria-labelledby')) : '';
+        const titled = (own && !/^(?:attach|upload|browse|choose(?: a)? file|select(?: a)? file)$/i.test(own) ? own : '')
+                       || (group ? textOf(group.getRootNode(), group.getAttribute('aria-labelledby')) : '');
+        if (titled) { label = titled; fileRequired = required || group.getAttribute('aria-required') === 'true'; }
+      }
       const item = {kind: type, marker: mark(el, 'data-jobintel-control', 'c'),
-                    label: labelFor(el) || containerLabel(el, (f) => f === el), required,
+                    label, helper: helperFor(el), required: fileRequired,
                     invalid: invalid(el), name: el.name || ''};
       item.has_value = type === 'checkbox' ? el.checked : (type === 'file' ? el.files.length > 0 : String(el.value).trim() !== '');
+      if (type === 'combobox' && !item.has_value) {
+        // A select widget that empties its typing input after a pick shows the choice beside it (React-Select).
+        const box = el.closest('[class*="value-container"], [class*="ValueContainer"]');
+        const single = box && box.querySelector('[class*="single-value"], [class*="singleValue"]');
+        item.has_value = !!(single && norm(single.innerText));
+      }
       if (type === 'select') item.options = [...el.options].map((o) => ({text: norm(o.text), value: o.value}));
       controls.push(item);
     }
@@ -309,7 +373,9 @@ COMBOBOX_OPTION_SCRIPT = """
   const root = el.getRootNode();
   const list = root.getElementById ? root.getElementById(id) : document.getElementById(id);
   if (!list || !shown(list)) return 'listbox_not_open';
-  const exact = [...list.querySelectorAll('[role=option]')].filter((o) => shown(o) && norm(o.innerText) === value);
+  // "<value>" exactly, or "<value> +<dialling code>" (a country picker that shows each country's code)
+  const same = (t) => t === value || t.replace(/\\s\\+\\d{1,4}$/, '') === value;
+  const exact = [...list.querySelectorAll('[role=option]')].filter((o) => shown(o) && same(norm(o.innerText)));
   if (exact.length !== 1) return exact.length ? 'ambiguous_option' : 'no_exact_option';
   exact[0].setAttribute('data-jobintel-option', el.getAttribute('data-jobintel-control'));
   return 'ok';
@@ -338,6 +404,51 @@ LOCATION_OPTION_SCRIPT = """
 }
 """
 
+# Fallback for a combobox that names no listbox (no aria-controls / aria-owns), e.g. a hosted ATS whose
+# option list is rendered on demand. Option-list structures are [role=listbox] / [role=menu] elements and
+# the parents of loose [role=option] / [role=menuitem] items. LIST_PRESTATE_SCRIPT marks every such
+# structure visible BEFORE this control is clicked/typed into; INTERACTION_OPTION_SCRIPT then considers
+# only structures that became visible since (this interaction's own list), never page text. Exactly one
+# new structure, holding exactly one option whose normalised text equals the approved value -> ok.
+_OPTION_LISTS_JS = """
+  const shown = (n) => n.checkVisibility ? n.checkVisibility({visibilityProperty: true}) : !!n.getClientRects().length;
+  const lists = (el) => {
+    const roots = [...new Set([el.getRootNode(), document])];
+    const found = new Set();
+    for (const root of roots) {
+      for (const n of root.querySelectorAll('[role=listbox], [role=menu]')) if (shown(n)) found.add(n);
+      for (const o of root.querySelectorAll('[role=option], [role=menuitem]')) {
+        if (shown(o) && !o.closest('[role=listbox], [role=menu]') && o.parentElement) found.add(o.parentElement);
+      }
+    }
+    return [...found].filter((n) => !n.contains(el) && ![...found].some((m) => m !== n && m.contains(n)));
+  };
+"""
+
+LIST_PRESTATE_SCRIPT = """
+(el) => {""" + _OPTION_LISTS_JS + """
+  for (const root of new Set([el.getRootNode(), document]))
+    for (const n of root.querySelectorAll('[data-jobintel-prelist]')) n.removeAttribute('data-jobintel-prelist');
+  for (const n of lists(el)) n.setAttribute('data-jobintel-prelist', '1');
+  return true;
+}
+"""
+
+INTERACTION_OPTION_SCRIPT = """
+([el, value]) => {""" + _OPTION_LISTS_JS + """
+  const fold = (s) => (s || '').normalize('NFKC').replace(/\\s+/g, ' ').trim().toLowerCase();
+  const fresh = lists(el).filter((n) => !n.hasAttribute('data-jobintel-prelist'));
+  if (!fresh.length) return 'listbox_not_open';
+  if (fresh.length > 1) return 'unclear_listbox_ownership';
+  const items = [...fresh[0].querySelectorAll('[role=option], [role=menuitem]')].filter(shown);
+  const exact = items.filter((o) => fold(o.innerText) === fold(value)
+                               || fold(o.innerText).replace(/\\s\\+\\d{1,4}$/, '') === fold(value));
+  if (exact.length !== 1) return exact.length ? 'ambiguous_option' : 'no_exact_option';
+  exact[0].setAttribute('data-jobintel-option', el.getAttribute('data-jobintel-control'));
+  return 'ok';
+}
+"""
+
 CONTROL_STATE_SCRIPT = """
 (el) => ({value: el.value, invalid: el.getAttribute('aria-invalid') === 'true'
           || (el.willValidate && !el.validity.valid && !el.validity.valueMissing)})
@@ -345,7 +456,18 @@ CONTROL_STATE_SCRIPT = """
 
 
 def normalise_label(text: str) -> str:
-    return " ".join(text.replace("*", " ").split()).rstrip(":").strip().casefold()
+    return " ".join(stop_only.strip_required_markers(text).split()).rstrip(":").strip().casefold()
+
+
+# A Resume/CV label followed only by its own upload button's wording (e.g. a hosted form's "Resume/CV ✱ ATTACH
+# RESUME/CV"). Only this trailing button phrase is removed; the rest must still be an exact CV label.
+_CV_BUTTON_SUFFIX = re.compile(r"\s+(?:attach|upload|choose|select|browse|add)(?:\s+(?:a|your))?"
+                               r"(?:\s+(?:file|resume/cv|cv/resume|resume|cv|résumé))?$")
+
+
+def _cv_label(label: str) -> str:
+    stripped = _CV_BUTTON_SUFFIX.sub("", label)
+    return stripped if stripped in CV_UPLOAD_LABELS else label
 
 
 @dataclass(frozen=True)
@@ -357,6 +479,7 @@ class SealedBundle:
     role: str
     application_url: str
     answers: tuple[AnswerSnapshot, ...]
+    expected_company_names: tuple[str, ...] = ()  # sealed at package time, see stop_only.company_seen
 
 
 def load_bundle(directory) -> SealedBundle:
@@ -380,7 +503,8 @@ def load_bundle(directory) -> SealedBundle:
         raise ValueError("Sealed CV hash does not match the bundle")
     answers = tuple(AnswerSnapshot(a["field"], a["value"], a["source"], a["version"]) for a in request["answers"])
     return SealedBundle(request, directory / CV_FILE, request["company"], request["role"],
-                        request["application_url"], answers)
+                        request["application_url"], answers,
+                        tuple(request.get("expected_company_names") or ()))
 
 
 def _looks_final(text: str) -> bool:
@@ -412,6 +536,60 @@ def validate_nonfatal_blocked_writes(application_url: str, entries) -> frozenset
     return frozenset(entries)
 
 
+def _is_captcha_host(host: str) -> bool:
+    host = (host or "").casefold()
+    return any(host == s or host.endswith("." + s) for s in CAPTCHA_HOST_SUFFIXES)
+
+
+def validate_page_security_writes(application_url: str, entries) -> frozenset:
+    """Exact (method, host, path) page-load security entries (see module docstring). POST only; a
+    same-host entry only under SAME_HOST_SECURITY_PREFIXES (matched as a prefix); a third-party entry
+    is a plain DNS host and one exact, non-final path (matched exactly). No wildcard, query or scheme."""
+    app_host = urlsplit(application_url).hostname or ""
+    entries = tuple((str(m), str(h), str(p)) for m, h, p in entries)
+    if len(entries) > MAX_PAGE_SECURITY_WRITES or len(set(entries)) != len(entries):
+        raise ValueError(f"At most {MAX_PAGE_SECURITY_WRITES} distinct exact page-security entries")
+    for method, host, path in entries:
+        if method != "POST":
+            raise ValueError("A page-security entry must be POST")
+        if not _DNS_HOST.fullmatch(host):
+            raise ValueError("A page-security entry must name one exact lowercase DNS host")
+        if not path.startswith("/") or any(c in path for c in "*?#") or _looks_final(path) or "graphql" in path.casefold():
+            raise ValueError("A page-security entry must be one exact, non-final path")
+        if host == app_host:
+            if path not in SAME_HOST_SECURITY_PREFIXES:
+                raise ValueError("A same-host page-security entry may only name the challenge-platform prefix")
+        elif host.endswith("." + app_host) or app_host.endswith("." + host):
+            raise ValueError("Writes to the application host's parent/subdomains are always fatal")
+    return frozenset(entries)
+
+
+def _security_match(request, entries, app_host) -> bool:
+    parts = urlsplit(request.url)
+    host = parts.hostname or ""
+    for method, entry_host, path in entries:
+        if request.method != method or host != entry_host or parts.scheme != "https":
+            continue
+        if host == app_host and parts.path.startswith(path):
+            return True
+        if host != app_host and parts.path == path:
+            return True
+    return False
+
+
+def _carries_application_data(body: bytes, bundle, cv_bytes) -> bool:
+    if not body:
+        return False
+    if cv_bytes and cv_bytes in body:
+        return True
+    lowered = body.lower()
+    for answer in bundle.answers:
+        value = str(answer.value or "").strip()
+        if len(value) >= 6 and value.lower().encode() in lowered:
+            return True
+    return False
+
+
 @dataclass(frozen=True)
 class CvUploadPolicy:
     """Per-request permission to upload the sealed, approved CV once. Built by the submission
@@ -424,6 +602,10 @@ class CvUploadPolicy:
     # exact (endpoint, operationName) mutation that attaches the stored file to the form field; allowed
     # only after this window's handle + storage succeeded, and only naming this window's upload
     association_mutations: frozenset = frozenset()
+    # exact (method, https URL on the application host) of a same-host resume-parse upload (some hosted forms:
+    # selecting the file POSTs it once to e.g. /parseResume); allowed once, inside the window, only with
+    # the sealed bytes in its body. The file itself stays in the form for the human's own Submit.
+    parse_writes: frozenset = frozenset()
 
 
 def validate_cv_upload_policy(bundle: SealedBundle, policy: CvUploadPolicy) -> CvUploadPolicy:
@@ -477,8 +659,20 @@ def validate_cv_upload_for(application_url: str, artifact_id: str, sha256: str, 
             raise ValueError("CV storage write must name one exact lowercase DNS host (no wildcard)")
         if host == app_host or host.endswith("." + app_host) or app_host.endswith("." + host):
             raise ValueError("CV storage host cannot be the application host or its parent/subdomains")
+    parses = tuple((str(m), str(u)) for m, u in policy.parse_writes)
+    if len(parses) > 1:
+        raise ValueError("At most 1 exact same-host resume-parse write")
+    for method, url in parses:
+        parts = urlsplit(url)
+        words = set(re.findall(r"[a-z]+", re.sub(r"([a-z])([A-Z])", r"\1 \2", parts.path).casefold()))
+        if (method != "POST" or parts.scheme != "https" or parts.hostname != app_host or parts.username
+                or parts.password or parts.query or parts.fragment or "*" in url or not parts.path.strip("/")
+                or url.split("?", 1)[0].rstrip("/") == application_url.split("?", 1)[0].rstrip("/")):
+            raise ValueError("A resume-parse write must be one exact https POST URL on the approved host (not the form URL)")
+        if "parse" not in words or not words & {"resume", "cv"} or words & set(CV_UPLOAD_FINAL_TERMS):
+            raise ValueError("A resume-parse write must name a resume parse and no final action")
     return CvUploadPolicy(policy.artifact_id, policy.sha256, policy.filename, frozenset(mutations), frozenset(storage),
-                          frozenset(associations))
+                          frozenset(associations), frozenset(parses))
 
 
 def validate_write_entries(application_url: str, entries) -> frozenset:
@@ -524,9 +718,15 @@ class RunResult:
     live_host: str = ""  # set only in single-request live-host mode
     advance_clicks: list = field(default_factory=list)
     blocked_submissions: list = field(default_factory=list)
+    # Programmatic submits of forms posting to ANOTHER host (third-party widget bootstrap): blocked, recorded,
+    # not an application submit, so they do not stop the run.
+    foreign_submits_blocked: list = field(default_factory=list)
     blocked_requests: list = field(default_factory=list)
     allowed_writes: list = field(default_factory=list)
     nonfatal_blocked_requests: list = field(default_factory=list)  # aborted, recorded, did not stop the run
+    # Human-verification providers (Turnstile / hCaptcha / reCAPTCHA) the page LOADED (GET; never blocked,
+    # never answered): their presence means final verification belongs to the human.
+    human_verification_seen: list = field(default_factory=list)
     evidence: list = field(default_factory=list)
 
 
@@ -600,6 +800,7 @@ def release_submit_guard(page, release_token: str) -> bool:
 
 def run(page, bundle: SealedBundle, *, write_allowlist=(), live_host: str | None = None, graphql_reads=(),
         graphql_form_writes=(), nonfatal_blocked_writes=(), guard_release_token: str | None = None,
+        page_security_writes=(),
         cv_upload: CvUploadPolicy | None = None) -> RunResult:
     """Run one stop-only attempt. `page` must be a fresh Playwright(-compatible) page.
     `write_allowlist` is an explicit, caller-supplied set of benign background writes.
@@ -619,6 +820,11 @@ def run(page, bundle: SealedBundle, *, write_allowlist=(), live_host: str | None
     allowed_reads = graphql_policy.validate_reads(bundle.application_url, graphql_reads)
     allowed_form_writes = graphql_policy.validate_form_writes(bundle.application_url, graphql_form_writes)
     nonfatal = validate_nonfatal_blocked_writes(bundle.application_url, nonfatal_blocked_writes)
+    security = validate_page_security_writes(bundle.application_url, page_security_writes)
+    if security and not live_host:
+        raise ValueError("Page-security entries are only defined for a live-host run")
+    app_host = urlsplit(bundle.application_url).hostname or ""
+    sealed_cv = bundle.cv_path.read_bytes() if security else None
     policy = validate_cv_upload_policy(bundle, cv_upload) if cv_upload is not None else None
     result = RunResult(live_host=live_host or "")
     guard = {"finished": False}
@@ -636,8 +842,22 @@ def run(page, bundle: SealedBundle, *, write_allowlist=(), live_host: str | None
             result.blocked_requests.append(_diagnostic(request, "navigation"))
             return route.abort()
         if request.method in {"GET", "HEAD"}:
+            host = urlsplit(request.url).hostname or ""
+            if live_host and _is_captcha_host(host) and host not in {x["host"] for x in result.human_verification_seen}:
+                result.human_verification_seen.append(_diagnostic(request, "human_verification_provider_loaded"))
             return route.fallback()
         parts = urlsplit(request.url)
+        if security and not _is_main_navigation(page, request) and _security_match(request, security, app_host):
+            if request.resource_type not in {"xhr", "fetch", "ping", "beacon"} or \
+                    _carries_application_data(_post_body_bytes(request), bundle, sealed_cv):
+                result.blocked_requests.append(_diagnostic(request, "page_security_refused"))
+                return route.abort()
+            result.allowed_writes.append(_diagnostic(request, "page_security_infrastructure"))
+            return route.fallback()
+        if live_host and _is_captcha_host(parts.hostname or ""):
+            # A CAPTCHA challenge / verification: never answered by automation. Stop for the human.
+            result.blocked_requests.append(_diagnostic(request, "captcha_challenge"))
+            return route.abort()
         if (request.method, parts.hostname or "") in nonfatal and not _is_main_navigation(page, request):
             # Still aborted (never leaves the browser); recorded apart so it does not stop the run.
             result.nonfatal_blocked_requests.append(_diagnostic(request, "nonfatal_blocked_write"))
@@ -650,12 +870,29 @@ def run(page, bundle: SealedBundle, *, write_allowlist=(), live_host: str | None
             if body and window["cv_bytes"] and window["cv_bytes"] not in body:
                 result.blocked_requests.append(_diagnostic(request, "cv_storage_body_mismatch"))
                 return route.abort()
+            if _storage_only(policy) and (any(kind == "storage" for kind, _ in window["cv_flow"])
+                                          or not body or not window["cv_bytes"]):
+                # Storage-only flow: exactly one upload, and it must visibly carry the sealed bytes.
+                result.blocked_requests.append(_diagnostic(request, "cv_storage_refused"))
+                return route.abort()
             result.allowed_writes.append({**_diagnostic(request, "cv_storage_upload"), "field": "cv",
                                           "sealed_bytes_seen": bool(body)})
             window["cv_flow"].append(("storage", request))
             window["cv_storage_tokens"] = window.get("cv_storage_tokens", set()) | _multipart_tokens(body)
             return route.fallback()
         url = request.url.split("#", 1)[0]
+        if (window["cv"] and policy is not None and (request.method, url) in policy.parse_writes
+                and request.resource_type in {"xhr", "fetch"} and not _is_main_navigation(page, request)):
+            # The sealed CV's bytes going once to the exact same-host resume-parse endpoint, only in the window.
+            raw = _post_body_bytes(request)
+            if any(kind == "parse" for kind, _ in window["cv_flow"]) or not raw or not window["cv_bytes"] \
+                    or window["cv_bytes"] not in raw:
+                result.blocked_requests.append(_diagnostic(request, "cv_parse_refused"))
+                return route.abort()
+            result.allowed_writes.append({**_diagnostic(request, "cv_resume_parse"), "field": "cv",
+                                          "sealed_bytes_seen": True})
+            window["cv_flow"].append(("parse", request))
+            return route.fallback()
         body = _post_body(request)
         if graphql_policy.looks_like_graphql(url, body):
             info = graphql_policy.inspect(url, body)
@@ -766,13 +1003,14 @@ def detach_guard(page) -> bool:
 
 
 def _check_identity(page, bundle, snapshot, result):
-    text = " | ".join([snapshot["title"], *snapshot["headings"]]).casefold()
-    company_seen = bundle.company.casefold() in text
-    role_seen = bundle.role.casefold() in text
+    page_text = " | ".join([snapshot["title"], *snapshot["headings"]])
+    company_name = stop_only.company_seen(bundle, page_text)  # one of the sealed expected names, or None
+    company_seen = company_name is not None
+    role_seen = bundle.role.casefold() in page_text.casefold()
     url = page.url
     first = result.pages_visited == 1
     if first:
-        state = stop_only.check_page(bundle, company=bundle.company if company_seen else snapshot["title"],
+        state = stop_only.check_page(bundle, company=company_name if company_seen else snapshot["title"],
                                      role=bundle.role if role_seen else snapshot["title"], application_url=url)
     else:
         same_host = urlsplit(url).hostname == urlsplit(bundle.application_url).hostname
@@ -780,6 +1018,7 @@ def _check_identity(page, bundle, snapshot, result):
     if result.live_host and not first:
         url = _without_query(url)
     result.page_identity = {"url": url, "title": snapshot["title"], "company_seen": company_seen,
+                            "company_matched": company_name,
                             "role_seen": role_seen, "state": state, "page": result.pages_visited}
     if first:
         result.start_identity = dict(result.page_identity)
@@ -798,6 +1037,8 @@ def _usable_frames(page, bundle):
         if (parts.scheme == "https" and parts.hostname == host) or frame.url in {"about:blank", "about:srcdoc"}:
             frames.append(frame)
             continue
+        if parts.scheme == "https" and _is_captcha_host(parts.hostname or ""):
+            continue  # a CAPTCHA widget's own frame: never scanned, never touched (the human's)
         count = frame.evaluate("() => document.querySelectorAll('input:not([type=hidden]), select, textarea').length")
         if count:
             raise _Stop("needs_human_input", "cross_origin_frame_with_form_controls")
@@ -810,6 +1051,8 @@ def _live_check(page, result):
         return
     if any(b.get("kind") == "navigation" for b in result.blocked_requests):
         raise _Stop("aborted_wrong_job", "host_drift_blocked")
+    if any(b.get("kind") == "captcha_challenge" for b in result.blocked_requests):
+        raise _Stop("needs_human_input", "captcha_requires_human")
     if result.blocked_requests:
         raise _Stop("needs_human_input", "unexpected_write_blocked")
     if not _on_host(page.main_frame.url, result.live_host):
@@ -906,9 +1149,15 @@ def _control_key(control) -> dict:
     if control["kind"] == "file":
         fields = ["cv"] if any(term in label for term in CV_LABEL_TERMS) else []
     else:
-        fields = sorted(stop_only.label_fields(label, deterministic=True))
+        fields = sorted(stop_only.label_fields(normalise_label(_semantic_label(control)), deterministic=True))
     return {"label": label[:120], "kind": control["kind"], "required": bool(control["required"]),
             "canonical_fields": fields}
+
+
+def _semantic_label(control) -> str:
+    """The primary label, or "<label> || <helper>" when the control's own helper text changes which
+    location fact a location-family label asks for (stop_only.semantic_label)."""
+    return stop_only.semantic_label(control["label"], control.get("helper", ""))
 
 
 def _process_control(frame, bundle, control, result, context, window=None) -> str:
@@ -920,14 +1169,16 @@ def _process_control(frame, bundle, control, result, context, window=None) -> st
         return _handle_file(frame, bundle, control, result, context)
     if kind not in SUPPORTED_TEXT_TYPES | {"textarea", "select", "radio", "checkbox", "combobox", *DATE_FORMATS}:
         return _skip_or_escalate(result, label, f"unsupported_control:{kind}", required, context)
-    value, reason = _resolve(bundle, normalise_label(label))
+    semantic = _semantic_label(control)  # == label unless its own helper narrows a location field
+    value, reason = _resolve(bundle, normalise_label(semantic))
     if value is None:
-        if reason.startswith("sensitive:") or reason == "ambiguous_profile_link":
+        if (reason.startswith(("sensitive:", stop_only.HUMAN_ONLY_WORK_AUTHORISATION))
+                or reason in {"ambiguous_profile_link", stop_only.CONFLICTING_LOCATION}):
             _escalate(result, label, reason, context)
             return "escalated"
         return _skip_or_escalate(result, label, reason, required, context)
-    field_name = next(f for f in stop_only.label_fields(normalise_label(label), deterministic=True)
-                      if stop_only.question(bundle, f, normalise_label(label), "", "", deterministic=True).get("value")
+    field_name = next(f for f in stop_only.label_fields(normalise_label(semantic), deterministic=True)
+                      if stop_only.question(bundle, f, normalise_label(semantic), "", "", deterministic=True).get("value")
                       == value)
     marker = control["options"][0]["marker"] if kind == "radio" else control["marker"]
     selector = f'[data-jobintel-control="{marker}"]'
@@ -940,9 +1191,16 @@ def _process_control(frame, bundle, control, result, context, window=None) -> st
         if failure:
             _escalate(result, label, failure, context)
             return "escalated"
-        result.fields_filled.append({"field": field_name, "value": value, "page_label": label})
         frame.eval_on_selector(selector, "el => el.blur()")
         frame.wait_for_timeout((window or {}).get("settle_ms") or SETTLE_MS)
+        if (field_name == "location" and kind in SUPPORTED_TEXT_TYPES
+                and not frame.eval_on_selector(selector, "el => el.value.trim()")):
+            # The page cleared the assigned text on blur: a suggestion picker. Pick its one exact suggestion.
+            failure = _pick_location_suggestion(frame, selector, value)
+            if failure:
+                _escalate(result, label, failure, context)
+                return "escalated"
+        result.fields_filled.append({"field": field_name, "value": value, "page_label": semantic})
     finally:
         if window is not None:
             window["field"] = None
@@ -989,6 +1247,8 @@ def _fill(frame, control, value, field=None) -> str | None:
         return None if frame.eval_on_selector(selector, "el => el.value") == value else "date_value_rejected_by_control"
     if kind == "combobox" and field == "location":
         return _fill_location_combobox(frame, selector, value)
+    if kind == "combobox" and field in {"country", "city"}:
+        return _fill_place_combobox(frame, selector, value, field)
     if kind == "combobox":
         return _fill_combobox(frame, selector, value)
     frame.fill(selector, value)
@@ -1007,14 +1267,35 @@ def _fill_combobox(frame, selector, value) -> str | None:
     if outcome != "ok":
         return f"combobox_{outcome}"
     marker = frame.eval_on_selector(selector, "el => el.getAttribute('data-jobintel-control')")
+    chosen = frame.eval_on_selector(f'[data-jobintel-option="{marker}"]', "o => o.innerText.replace(/\\s+/g, ' ').trim()")
     frame.click(f'[data-jobintel-option="{marker}"]')
     frame.wait_for_timeout(SETTLE_MS)
-    if frame.eval_on_selector(selector, "el => el.value.trim()") != value:
+    if not (_reflected(frame, selector, value) or _reflected(frame, selector, chosen)):
         return "combobox_selection_not_reflected"
     return None
 
 
 LOCATION_WAIT_MS = 8000
+
+# A select widget that keeps its typing input empty after a pick and shows the choice in a sibling
+# "single value" element (e.g. React-Select): the choice is reflected when that element's text is the chosen
+# option's text or a part of it (a country picker showing only "+44" for "United Kingdom +44").
+REFLECTED_SCRIPT = """
+([el, chosen]) => {
+  const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+  const want = norm(chosen);
+  if (norm(el.value) === want) return true;
+  const box = el.closest('[class*="value-container"], [class*="ValueContainer"]');
+  const single = box && box.querySelector('[class*="single-value"], [class*="singleValue"]');
+  const shown = norm(single ? single.innerText : '');
+  return !!shown && (shown === want || want.includes(shown));
+}
+"""
+
+
+def _reflected(frame, selector, chosen) -> bool:
+    return bool(frame.eval_on_selector(selector, f"el => ({REFLECTED_SCRIPT})([el, {json.dumps(chosen)}])"))
+
 
 
 def _fill_location_combobox(frame, selector, value) -> str | None:
@@ -1023,11 +1304,14 @@ def _fill_location_combobox(frame, selector, value) -> str | None:
     the country. None or several such suggestions -> escalate; nothing is guessed."""
     if "," not in value:
         return "location_value_not_city_and_country"
+    frame.click(selector)  # some widgets name their listbox (aria-controls) only once opened
     frame.fill(selector, value.split(",")[0].strip())
     outcome, waited = "listbox_not_open", 0
     while waited <= LOCATION_WAIT_MS:
         outcome = frame.eval_on_selector(selector, f"el => ({LOCATION_OPTION_SCRIPT})([el, {json.dumps(value)}])")
-        if outcome.startswith("ok:") or outcome in {"ambiguous_option", "no_listbox_reference"}:
+        # A listbox rendered only when its (async) suggestions arrive is not there yet: keep waiting.
+        if outcome.startswith("ok:") or outcome == "ambiguous_option" or (
+                outcome == "no_matching_option" and waited >= LOCATION_WAIT_MS // 2):
             break
         frame.wait_for_timeout(CV_UPLOAD_POLL_MS)
         waited += CV_UPLOAD_POLL_MS
@@ -1037,8 +1321,119 @@ def _fill_location_combobox(frame, selector, value) -> str | None:
     marker = frame.eval_on_selector(selector, "el => el.getAttribute('data-jobintel-control')")
     frame.click(f'[data-jobintel-option="{marker}"]')
     frame.wait_for_timeout(SETTLE_MS)
-    if frame.eval_on_selector(selector, "el => el.value.trim()") != chosen:
+    if not _reflected(frame, selector, chosen):
         return "location_selection_not_reflected"
+    return None
+
+
+# Location suggestion pickers without ARIA (a search-as-you-type list the page renders after real typing and
+# empties the field on blur unless a suggestion was chosen). Only elements that became visible during this
+# interaction are candidates; matching is decided in Python on their exact text.
+SUGGESTION_PRESTATE_SCRIPT = """
+() => { for (const el of document.querySelectorAll('body *'))
+          if (el.checkVisibility ? el.checkVisibility({visibilityProperty: true}) : el.getClientRects().length)
+            el.setAttribute('data-jobintel-prevvisible', '1');
+        for (const el of document.querySelectorAll('[data-jobintel-suggestion]')) el.removeAttribute('data-jobintel-suggestion'); }
+"""
+SUGGESTION_COLLECT_SCRIPT = """
+() => { const out = [];
+  for (const el of document.querySelectorAll('body *')) {
+    if (el.hasAttribute('data-jobintel-prevvisible') || el.matches('input, textarea, select, label, script, style')) continue;
+    const shown = el.checkVisibility ? el.checkVisibility({visibilityProperty: true}) : el.getClientRects().length;
+    const text = (el.textContent || '').replace(/\\s+/g, ' ').trim();
+    if (!shown || !text || [...el.children].some(c => (c.textContent || '').trim())) continue;  // leaf text only
+    el.setAttribute('data-jobintel-suggestion', String(out.length)); out.push(text);
+  }
+  return out; }
+"""
+# Including the ISO 3166 alpha-3 code used by hosted location suggestions,
+# for example "<city>, <county>, England, GBR" or "<city>, ON, CAN".
+UK_COUNTRY_NAMES = frozenset({"united kingdom", "uk", "gb", "gbr", "great britain", "england", "scotland", "wales",
+                              "northern ireland"})
+
+
+def _location_suggestion_matches(text: str, city: str, country: str) -> bool:
+    """'<city>, ..., <country>' exactly: first part is the city, last part is the approved country (any UK
+    name when the country is the UK), and no middle part names a different country."""
+    parts = [p.strip().casefold() for p in text.split(",") if p.strip()]
+    if len(parts) < 2 or parts[0] != city.casefold():
+        return False
+    names = UK_COUNTRY_NAMES if country.casefold() in UK_COUNTRY_NAMES else {country.casefold()}
+    return parts[-1] in names and all(p in names or p not in _OTHER_COUNTRIES for p in parts[1:])
+
+
+_OTHER_COUNTRIES = frozenset({"canada", "can", "united states", "usa", "us", "australia", "aus", "ireland", "irl",
+                              "south africa", "zaf", "new zealand", "nzl", "india", "ind"})
+
+
+def _pick_location_suggestion(frame, selector, value) -> str | None:
+    """Type the approved city (the site's own location-search READ), wait for its suggestions and choose the
+    single one that is that city in the approved country; then confirm the choice survives blur. No
+    suggestion, a non-matching list (the city in another country), several matches, or a cleared field ->
+    escalate. Types only the city's characters -- never Enter/Tab -- and never guesses."""
+    if "," not in value:
+        return "location_value_not_city_and_country"
+    city, country = value.split(",")[0].strip(), value.split(",")[-1].strip()
+    frame.evaluate(SUGGESTION_PRESTATE_SCRIPT)
+    control = frame.locator(selector)
+    control.click()
+    control.fill("")
+    control.press_sequentially(city, delay=40)
+    texts, waited = [], 0
+    while waited <= LOCATION_WAIT_MS:
+        texts = frame.evaluate(SUGGESTION_COLLECT_SCRIPT)
+        if any(t.split(",")[0].strip().casefold() == city.casefold() for t in texts):
+            frame.wait_for_timeout(CV_UPLOAD_POLL_MS)  # let the list finish rendering, then read it once more
+            texts = frame.evaluate(SUGGESTION_COLLECT_SCRIPT)
+            break
+        frame.wait_for_timeout(CV_UPLOAD_POLL_MS)
+        waited += CV_UPLOAD_POLL_MS
+    matches = [i for i, t in enumerate(texts) if _location_suggestion_matches(t, city, country)]
+    if not matches:
+        control.fill("")
+        return "location_no_matching_suggestion"
+    if len({texts[i].casefold() for i in matches}) > 1:
+        control.fill("")
+        return "location_ambiguous_suggestions"
+    chosen = texts[matches[0]]
+    frame.click(f'[data-jobintel-suggestion="{matches[0]}"]')
+    frame.wait_for_timeout(SETTLE_MS)
+    frame.eval_on_selector(selector, "el => el.blur()")
+    frame.wait_for_timeout(max(SETTLE_MS, 500))  # a page that clears the choice afterwards is caught here
+    if frame.eval_on_selector(selector, "el => el.value.trim()").casefold() != chosen.casefold():
+        return "location_selection_not_kept"
+    return None
+
+
+def _fill_place_combobox(frame, selector, value, field) -> str | None:
+    """Country / city combobox: first the plain exact-option selection; if the list is not open or
+    has no exact option (a search-as-you-type autocomplete), type the approved value itself (the
+    site's own suggestion READ) and click the single suggestion whose text is exactly that value.
+    A combobox that names no listbox gets the same typed path, but only an option list that became
+    visible during this interaction is read; several such lists -> unclear ownership.
+    Never a different country or city: none or several exact suggestions -> escalate."""
+    frame.eval_on_selector(selector, LIST_PRESTATE_SCRIPT)  # option lists already open before this interaction
+    failure = _fill_combobox(frame, selector, value)
+    if failure not in {"combobox_listbox_not_open", "combobox_no_exact_option", "combobox_no_listbox_reference"}:
+        return failure  # selected, or ambiguous / not reflected: unchanged
+    # No named listbox: only an option list this interaction opened counts (INTERACTION_OPTION_SCRIPT).
+    script = INTERACTION_OPTION_SCRIPT if failure == "combobox_no_listbox_reference" else COMBOBOX_OPTION_SCRIPT
+    frame.fill(selector, value)
+    outcome, waited = "listbox_not_open", 0
+    while waited <= LOCATION_WAIT_MS:
+        outcome = frame.eval_on_selector(selector, f"el => ({script})([el, {json.dumps(value)}])")
+        if outcome in {"ok", "ambiguous_option", "no_listbox_reference"}:
+            break
+        frame.wait_for_timeout(CV_UPLOAD_POLL_MS)
+        waited += CV_UPLOAD_POLL_MS
+    if outcome != "ok":
+        return f"{field}_{outcome}"
+    marker = frame.eval_on_selector(selector, "el => el.getAttribute('data-jobintel-control')")
+    chosen = frame.eval_on_selector(f'[data-jobintel-option="{marker}"]', "o => o.innerText.replace(/\\s+/g, ' ').trim()")
+    frame.click(f'[data-jobintel-option="{marker}"]')
+    frame.wait_for_timeout(SETTLE_MS)
+    if not (_reflected(frame, selector, value) or _reflected(frame, selector, chosen)):
+        return f"{field}_selection_not_reflected"
     return None
 
 
@@ -1079,7 +1474,10 @@ def _handle_file(frame, bundle, control, result, context) -> str:
     return "filled"
 
 
-FILENAME_VISIBLE_SCRIPT = "(name) => (document.body ? document.body.innerText : '').includes(name)"
+# Rendered text, compared case-insensitively: hosted upload buttons often style the shown file name with
+# CSS text-transform (a hosted form's button may uppercase it), and innerText applies it.
+FILENAME_VISIBLE_SCRIPT = ("(name) => (document.body ? document.body.innerText : '').toLocaleLowerCase()"
+                           ".includes(String(name).toLocaleLowerCase())")
 
 
 def _upload_cv(page, frame, bundle, control, result, context, window, scans) -> str:
@@ -1087,7 +1485,7 @@ def _upload_cv(page, frame, bundle, control, result, context, window, scans) -> 
     CV-upload window. 'filled' once the page visibly shows the uploaded file; otherwise escalated.
     Any write the window does not allow is blocked and stops the run (fatal) at the next check."""
     policy = window["policy"]
-    label = normalise_label(control["label"])
+    label = _cv_label(normalise_label(control["label"]))
     if not result.cv_control:
         result.cv_control = _control_key(control)
 
@@ -1121,7 +1519,7 @@ def _upload_cv(page, frame, bundle, control, result, context, window, scans) -> 
             return False
 
     def observe():
-        steps = _cv_flow_steps(window["cv_flow"])
+        steps = _cv_flow_steps(window["cv_flow"], storage_only=_storage_only(policy))
         steps["visible_in_page"] = result.cv_upload["visible_in_page"] = (
             result.cv_upload["visible_in_page"] or visible())
         result.cv_upload["steps"] = steps
@@ -1136,7 +1534,7 @@ def _upload_cv(page, frame, bundle, control, result, context, window, scans) -> 
         while True:
             _guard_tripped(page, result)  # an unauthorized upload/storage/final write is fatal here
             steps = observe()
-            if steps["form_associated"] and steps["visible_in_page"]:
+            if _cv_complete(steps, policy) and steps["visible_in_page"]:
                 break
             if waited >= CV_UPLOAD_WAIT_MS:
                 break
@@ -1154,20 +1552,37 @@ def _upload_cv(page, frame, bundle, control, result, context, window, scans) -> 
     steps["responses_ok"] = _cv_flow_responses_ok(window["cv_flow"])
     result.cv_upload["steps"] = steps
     # A visible file name alone never counts: the whole approved flow must have succeeded, in order.
-    if not (steps["form_associated"] and steps["visible_in_page"] and steps["responses_ok"]):
+    if not (_cv_complete(steps, policy) and steps["visible_in_page"] and steps["responses_ok"]):
         return refuse("cv_upload_not_confirmed")
     result.cv_upload_status = "uploaded"
     return "filled"
 
 
-def _cv_flow_steps(flow) -> dict:
-    """Which steps of handle -> storage -> form-value write happened, in that order."""
+def _cv_flow_steps(flow, storage_only: bool = False) -> dict:
+    """Which steps of handle -> storage -> form-value write happened, in that order. `storage_only`
+    (a policy with storage writes but no handle/association operations): the storage write itself is
+    the whole flow (the page presigns it with a GET)."""
     kinds = [kind for kind, _ in flow]
     handle = kinds.index("handle") if "handle" in kinds else None
-    storage = next((i for i, k in enumerate(kinds) if k == "storage" and handle is not None and i > handle), None)
+    storage = next((i for i, k in enumerate(kinds) if k == "storage" and (storage_only or (handle is not None and i > handle))), None)
     associate = next((i for i, k in enumerate(kinds) if k == "associate" and storage is not None and i > storage), None)
-    return {"upload_handle_created": handle is not None, "storage_written": storage is not None,
-            "form_associated": associate is not None}
+    steps = {"upload_handle_created": handle is not None, "storage_written": storage is not None,
+             "form_associated": associate is not None}
+    if "parse" in kinds:
+        steps["resume_parsed"] = True
+    return steps
+
+
+def _storage_only(policy) -> bool:
+    return bool(policy is not None and policy.storage_writes and not policy.graphql_mutations
+                and not policy.association_mutations and not policy.parse_writes)
+
+
+def _cv_complete(steps, policy) -> bool:
+    """The approved flow finished: handle -> storage -> association, (a parse-write policy) the one
+    same-host resume parse, or (a storage-only policy) the one storage write."""
+    return bool(steps["form_associated"] or (policy.parse_writes and steps.get("resume_parsed"))
+                or (_storage_only(policy) and steps["storage_written"]))
 
 
 _TOKEN_MIN, _TOKEN_MAX = 8, 512
@@ -1356,6 +1771,8 @@ def _guard_tripped(page, result):
             continue
         blocked = frame.evaluate("() => [...(window.__jobintelBlockedSubmits || [])]")
         result.blocked_submissions.extend(b for b in blocked if b not in result.blocked_submissions)
+        foreign = frame.evaluate("() => [...(window.__jobintelForeignSubmits || [])]")
+        result.foreign_submits_blocked.extend(b for b in foreign if b not in result.foreign_submits_blocked)
     if result.blocked_submissions or result.blocked_requests:
         raise _Stop("needs_human_input", "submission_attempt_blocked")
 

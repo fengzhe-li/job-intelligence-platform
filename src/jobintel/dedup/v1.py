@@ -144,8 +144,21 @@ def _location_keys(job: Job) -> set[str]:
     return {f"{_norm(location.city or '')}:{_norm(location.country)}" for location in job.locations}
 
 
+# Query parameters that identify ONE vacancy. Employer-hosted Greenhouse boards publish every job
+# under the same path with only the id in the query (stripe.com/jobs/search?gh_jid=8130930,
+# squarepoint-capital.com/open-opportunities?id=6040910); dropping the whole query merged an
+# entire board into one canonical job (live-observed 2026-10-17). Tracking parameters still go.
+_JOB_ID_PARAMS = frozenset({"gh_jid", "id", "jobid", "job_id", "jid", "vacancycode", "requisitionid", "reqid", "jk", "lever-origin-id"})
+
+
 def _canonical_url(url: str) -> str:
-    return re.sub(r"[?#].*$", "", url or "").rstrip("/").casefold()
+    base, _, query = re.sub(r"#.*$", "", url or "").partition("?")
+    keep = sorted(
+        f"{key.casefold()}={value}"
+        for key, value in (part.partition("=")[::2] for part in query.split("&") if part)
+        if key.casefold() in _JOB_ID_PARAMS and value
+    )
+    return (base.rstrip("/") + ("?" + "&".join(keep) if keep else "")).casefold()
 
 
 def _norm(value: str) -> str:

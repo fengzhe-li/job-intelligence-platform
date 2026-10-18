@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -100,6 +100,7 @@ class SyncResult:
     repositories_unchanged: int
     capabilities_extracted: int
     synced_repository_names: list[str]
+    capability_map_errors: dict[str, str] = field(default_factory=dict)
 
 
 def discover_repositories(username: str, token: str | None = None, limit: int = 100) -> list[RepositoryMetadata]:
@@ -144,6 +145,7 @@ def sync_repositories(
     limit: int = 100,
     name: str = "Personal Candidate",
     graduation_year: int = 2026,
+    build_capability_maps: bool = False,
 ) -> SyncResult:
     """Incrementally sync a GitHub account's repositories into the Evidence Bank.
 
@@ -160,6 +162,7 @@ def sync_repositories(
 
     languages_cache = _read_languages_cache(root)
     synced_names: list[str] = []
+    capability_map_errors: dict[str, str] = {}
     for repo in repositories:
         existing = state.get(repo.full_name)
         if existing is not None and existing.last_synced_at >= repo.pushed_at:
@@ -180,6 +183,14 @@ def sync_repositories(
             evidence_source_id=evidence_source_id,
         )
         synced_names.append(repo.full_name)
+        # Read the repository itself, not only its README: refresh its capability map at the new HEAD
+        # (fail-soft: a repository that cannot be cloned keeps its previous map, and the error is recorded).
+        if build_capability_maps:
+            try:
+                from jobintel.repo_capability_map import build_map, save_map
+                save_map(root, build_map(repo.full_name))
+            except Exception as exc:  # noqa: BLE001 -- never let one repository stop the sync
+                capability_map_errors[repo.full_name] = f"{type(exc).__name__}: {str(exc)[:200]}"
 
     repo_store.write_state(state)
     _write_languages_cache(root, languages_cache)
@@ -194,6 +205,7 @@ def sync_repositories(
         repositories_unchanged=len(repositories) - len(synced_names),
         capabilities_extracted=len(profile.capabilities) if profile else 0,
         synced_repository_names=synced_names,
+        capability_map_errors=capability_map_errors,
     )
 
 

@@ -49,8 +49,9 @@ def _boards(**boards):
     return fake
 
 
-def _refresh(connector, store, limit=100, keywords=()):
-    return refresh_connector(connector, store, default_ranking_config(), ConnectorQuery(keywords=keywords, limit=limit))
+def _refresh(connector, store, limit=100, keywords=(), scope_cap=None):
+    return refresh_connector(connector, store, default_ranking_config(),
+                             ConnectorQuery(keywords=keywords, limit=limit, scope_cap=scope_cap))
 
 
 def _active(store: LocalJobStore, source: str) -> dict[str, bool]:
@@ -69,7 +70,7 @@ class TruncatedObservationTests(unittest.TestCase):
             store = LocalJobStore(tmp)
             with patch("jobintel.connectors.greenhouse.fetch_json", side_effect=_boards(big=jobs)):
                 _refresh(GreenhouseConnector(("big",)), store, limit=500)
-                result = _refresh(GreenhouseConnector(("big",)), store, limit=100)
+                result = _refresh(GreenhouseConnector(("big",)), store, scope_cap=100)
             active = _active(store, "greenhouse")
 
         self.assertEqual(len(active), 150)
@@ -83,7 +84,7 @@ class TruncatedObservationTests(unittest.TestCase):
             store = LocalJobStore(tmp)
             boards = _boards(big=[_gh_job(i, f"Engineer {i}") for i in range(1, 121)], small=[_gh_job(1001), _gh_job(1002, "Data Engineer")])
             with patch("jobintel.connectors.greenhouse.fetch_json", side_effect=boards):
-                result = _refresh(GreenhouseConnector(("big", "small")), store, limit=100)
+                result = _refresh(GreenhouseConnector(("big", "small")), store, scope_cap=100)
             active = _active(store, "greenhouse")
 
         self.assertIn("1001", active)
@@ -100,7 +101,7 @@ class TruncatedObservationTests(unittest.TestCase):
             # truncated -> unknowable), job 1002 gone from complete `small`.
             big_second = [job for job in big_first if job["id"] != 5]
             with patch("jobintel.connectors.greenhouse.fetch_json", side_effect=_boards(big=big_second, small=[_gh_job(1001)])):
-                result = _refresh(GreenhouseConnector(("big", "small")), store, limit=100)
+                result = _refresh(GreenhouseConnector(("big", "small")), store, scope_cap=100)
             active = _active(store, "greenhouse")
 
         self.assertTrue(active["5"], "truncated board must not close")
@@ -281,7 +282,7 @@ class PaginationCapTests(unittest.TestCase):
         def fake(url, *args, **kwargs):
             if "/postings/" in url:
                 return {}
-            return {"content": [{"id": f"p{i}", "name": "Graduate Engineer"} for i in range(10)], "totalFound": 10_000}
+            return {"content": [{"id": f"p{i}", "name": "Graduate Engineer"} for i in range(100)], "totalFound": 10_000}
 
         with tempfile.TemporaryDirectory() as tmp:
             store = LocalJobStore(tmp)
@@ -289,6 +290,7 @@ class PaginationCapTests(unittest.TestCase):
                 result = _refresh(SmartRecruitersConnector(("acme",)), store, limit=10)
 
         self.assertEqual(result.complete_scopes, [])
+        self.assertIn("positions 101-10000 were not fetched", next(iter(result.incomplete_scopes.values())))
 
     def test_lever_requests_the_full_listing_not_a_server_side_limit(self) -> None:
         seen_urls: list[str] = []

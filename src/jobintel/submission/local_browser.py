@@ -22,6 +22,13 @@ the runner left it, and behaves as an ordinary browser: the human can edit, uplo
 click Submit without reloading. Nothing is clicked on their behalf. Any other outcome (or any exception) closes the browser and deletes its profile.
 `release` later ends a handed-off browser (only one this transport started, verified by its
 exact profile directory) and deletes its profile.
+
+Shared browser (`shared_browser=True`, the batch runner): ONE headed Chrome is reused, and every
+request gets a NEW tab of its own, bound by its tab session id and CDP target id (journaled
+before anything runs). Automation drives exactly one tab at a time and only ever the tab it
+created; a handed-off tab is never reconnected to or resumed. A non-handoff outcome closes only
+its own tab; `release` closes only that request's tab (verified by target id); the shared
+browser and every other tab -- including ones the human is working in -- are left alone.
 """
 from __future__ import annotations
 
@@ -33,6 +40,7 @@ import shutil
 import signal
 import subprocess
 import time
+import urllib.request
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -69,6 +77,8 @@ class LocalEvidence:
     page_guard_released: bool = False  # handoff: in-page submit guard removed so the human can submit
     live: dict = field(default_factory=dict)
     browser: str = NAME
+    target_id: str = ""  # shared browser: this request's own tab (CDP target)
+    shared_browser_id: str = ""  # shared browser: the reused browser this tab lives in
 
 
 def _alive(pid: int) -> bool:
@@ -101,7 +111,9 @@ class LocalBrowserTransport:
     swept automatically."""
 
     def __init__(self, *, runtime_dir, executable=None, headless=False, serve=None, playwright_factory=None,
-                 screenshot_dir=None, launch_timeout=LAUNCH_TIMEOUT_SECONDS, extra_args=(), legacy_runtime_dirs=()):
+                 screenshot_dir=None, launch_timeout=LAUNCH_TIMEOUT_SECONDS, extra_args=(), legacy_runtime_dirs=(),
+                 shared_browser=False):
+        self.shared_browser = bool(shared_browser)
         self.runtime_dir = Path(runtime_dir)
         self.legacy_runtime_dirs = tuple(Path(d) for d in legacy_runtime_dirs)
         self.extra_args = tuple(extra_args)  # tests only (e.g. a NOTFOUND host resolver)
@@ -109,7 +121,7 @@ class LocalBrowserTransport:
         self.playwright_factory, self.screenshot_dir, self.launch_timeout = playwright_factory, screenshot_dir, launch_timeout
 
     def __repr__(self) -> str:
-        return f"LocalBrowserTransport(headless={self.headless})"
+        return f"LocalBrowserTransport(headless={self.headless}, shared_browser={self.shared_browser})"
 
     # --- browser process ----------------------------------------------------------------------------
 
@@ -151,13 +163,14 @@ class LocalBrowserTransport:
             path = self._record_path(session_id, directory)
             if path.exists():
                 record = json.loads(path.read_text(encoding="utf-8"))
-                expected = (Path(directory) / "profiles" / session_id).resolve()
+                owner = record.get("shared_browser_id") or session_id  # a tab lives in its shared browser's profile
+                expected = (Path(directory) / "profiles" / owner).resolve()
                 if Path(record["profile_dir"]).resolve() != expected or record.get("session_id") != session_id:
                     raise ValueError("Local browser session record does not match its runtime directory")
                 return path, record
         return None, None
 
-    def _launch(self):
+    def _launch(self, record_session=True):
         session_id = f"local-{uuid4().hex}"
         self.runtime_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
         for sub in ("profiles", "sessions"):
@@ -177,7 +190,8 @@ class LocalBrowserTransport:
             lines = port_file.read_text().splitlines() if port_file.exists() else []
             if len(lines) >= 2 and lines[0].strip().isdigit() and lines[1].startswith("/devtools/browser/"):
                 record = {"session_id": session_id, "pid": proc.pid, "profile_dir": str(profile)}
-                self._record_path(session_id).write_text(json.dumps(record), encoding="utf-8")
+                if record_session:
+                    self._record_path(session_id).write_text(json.dumps(record), encoding="utf-8")
                 return session_id, proc, profile, f"ws://127.0.0.1:{int(lines[0])}{lines[1].strip()}"
             time.sleep(0.05)
         self._stop(proc.pid, profile)
@@ -202,10 +216,103 @@ class LocalBrowserTransport:
                 break
         shutil.rmtree(profile, ignore_errors=True)
 
+    # --- shared browser (batch: one browser, one tab per request) ------------------------------------
+
+    def _shared_path(self) -> Path:
+        return self.runtime_dir / "shared_browser.json"
+
+    @staticmethod
+    def _devtools(profile: Path):
+        """(port, browser ws path) from a running browser's own profile, or None."""
+        port_file = Path(profile) / "DevToolsActivePort"
+        lines = port_file.read_text().splitlines() if port_file.exists() else []
+        if len(lines) >= 2 and lines[0].strip().isdigit() and lines[1].startswith("/devtools/browser/"):
+            return int(lines[0]), lines[1].strip()
+        return None
+
+    def _browser_running(self, pid: int, profile: str) -> bool:
+        return _alive(pid) and f"--user-data-dir={profile}" in _command_line(pid)
+
+    def shared_browser_state(self) -> dict:
+        """The reused browser: {'browser_id', 'running'} or {} when none was started. No endpoint."""
+        path = self._shared_path()
+        if not path.exists():
+            return {}
+        record = json.loads(path.read_text(encoding="utf-8"))
+        return {"browser_id": record["browser_id"], "running": self._browser_running(record["pid"], record["profile_dir"])}
+
+    def _shared_browser(self):
+        """(browser_id, pid, profile, endpoint) of the running shared browser, launched if needed."""
+        path = self._shared_path()
+        if path.exists():
+            record = json.loads(path.read_text(encoding="utf-8"))
+            profile = (self.runtime_dir / "profiles" / record["browser_id"]).resolve()
+            if Path(record["profile_dir"]).resolve() != profile:
+                raise ValueError("Shared browser record does not match its runtime directory")
+            devtools = self._devtools(profile)
+            if self._browser_running(record["pid"], record["profile_dir"]) and devtools:
+                return record["browser_id"], record["pid"], profile, f"ws://127.0.0.1:{devtools[0]}{devtools[1]}"
+            path.unlink(missing_ok=True)  # it ended (e.g. the human closed it); its tabs' records stay until release
+        browser_id, proc, profile, endpoint = self._launch(record_session=False)
+        path.write_text(json.dumps({"browser_id": browser_id, "pid": proc.pid, "profile_dir": str(profile)}),
+                        encoding="utf-8")
+        return browser_id, proc.pid, profile, endpoint
+
+    def _targets(self, profile) -> set[str] | None:
+        """Ids of the shared browser's open page targets (localhost DevTools only), None if unreachable."""
+        devtools = self._devtools(Path(profile))
+        if devtools is None:
+            return None
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{devtools[0]}/json/list", timeout=5) as response:
+                return {item.get("id") for item in json.loads(response.read()) if item.get("type") == "page"}
+        except Exception:
+            return None
+
+    def _run_shared(self, bundle, evidence, on_session, *, run_kwargs):
+        browser_id, pid, profile, endpoint = self._shared_browser()
+        tab_id = f"local-{uuid4().hex}"
+        evidence.session_id, evidence.shared_browser_id = tab_id, browser_id
+
+        def bind(page):
+            cdp = page.context.new_cdp_session(page)
+            try:
+                target = cdp.send("Target.getTargetInfo")["targetInfo"]["targetId"]
+            finally:
+                cdp.detach()
+            record = {"session_id": tab_id, "pid": pid, "profile_dir": str(profile), "shared_browser_id": browser_id,
+                      "target_id": target}
+            self._record_path(tab_id).write_text(json.dumps(record), encoding="utf-8")
+            evidence.target_id = target
+            on_session(tab_id)  # journaled before the runner touches the tab
+
+        try:
+            result = browser_session.run_connected(
+                endpoint, bundle, evidence, playwright_factory=self._factory(),
+                connect_error=lambda exc: LocalBrowserError(
+                    "Local browser CDP connection failed", category="local_browser_cdp_connect_failed",
+                    stage="local_browser_cdp_connect", exception_type=type(exc).__name__),
+                new_tab=True, on_page=bind, **run_kwargs)
+        finally:
+            if not evidence.handoff_kept:  # its tab is already closed; the shared browser stays
+                evidence.released = True
+                self._record_path(tab_id).unlink(missing_ok=True)
+        return result, asdict(evidence)
+
+    def _close_target(self, record) -> None:
+        devtools = self._devtools(Path(record["profile_dir"]))
+        if devtools is None:
+            return
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{devtools[0]}/json/close/{record['target_id']}", timeout=5).close()
+        except Exception:
+            pass
+
     # --- transport interface -------------------------------------------------------------------------
 
     def run(self, bundle, *, write_allowlist, on_session, keep_alive=False, review_seconds=0, live_host=None,
-            graphql_reads=(), graphql_form_writes=(), nonfatal_blocked_writes=(), cv_upload=None):
+            graphql_reads=(), graphql_form_writes=(), nonfatal_blocked_writes=(), cv_upload=None,
+            page_security_writes=()):
         """Launch -> journal -> connect -> runner.run -> handoff (window stays open) or close.
         `cv_upload` (live only): the service-built policy to upload the sealed, approved CV once.
         Exactly once; never retried."""
@@ -223,6 +330,20 @@ class LocalBrowserTransport:
         if not live:
             shots = Path(self.screenshot_dir) if self.screenshot_dir else self.runtime_dir / "evidence"
             shots.mkdir(parents=True, exist_ok=True)
+        if self.shared_browser:
+            try:
+                return self._run_shared(bundle, evidence, on_session, run_kwargs=dict(
+                    serve=self.serve, write_allowlist=write_allowlist, keep_alive=keep_alive, live_host=live_host,
+                    graphql_reads=graphql_reads, graphql_form_writes=graphql_form_writes,
+                    nonfatal_blocked_writes=nonfatal_blocked_writes, screenshot_dir=shots,
+                    release_guard_on_handoff=True, cv_upload=cv_upload, page_security_writes=page_security_writes))
+            except (LocalBrowserError, ValueError):
+                raise
+            except Exception as exc:
+                if evidence.session_id and evidence.target_id:
+                    raise  # the runner itself failed inside its bound tab: the service journals it
+                raise LocalBrowserError("Local browser did not start", category="local_browser_launch_failed",
+                                        stage="local_browser_launch", exception_type=type(exc).__name__) from None
         try:
             session_id, proc, profile, endpoint = self._launch()
         except LocalBrowserError:
@@ -241,7 +362,7 @@ class LocalBrowserTransport:
                 serve=self.serve, write_allowlist=write_allowlist, keep_alive=keep_alive, live_host=live_host,
                 graphql_reads=graphql_reads, graphql_form_writes=graphql_form_writes,
                 nonfatal_blocked_writes=nonfatal_blocked_writes, screenshot_dir=shots, release_guard_on_handoff=True,
-                cv_upload=cv_upload)
+                cv_upload=cv_upload, page_security_writes=page_security_writes)
         finally:
             if not evidence.handoff_kept:
                 self._stop(proc.pid, profile)
@@ -255,6 +376,9 @@ class LocalBrowserTransport:
         if record is None:
             return "COMPLETED"
         running = _alive(record["pid"]) and f"--user-data-dir={record['profile_dir']}" in _command_line(record["pid"])
+        if running and record.get("target_id"):  # a shared-browser tab: running while its own tab is open
+            targets = self._targets(record["profile_dir"])
+            running = targets is not None and record["target_id"] in targets
         return "RUNNING" if running else "COMPLETED"
 
     def live_view(self, session_id: str, *, expires_in: int) -> dict:
@@ -265,6 +389,11 @@ class LocalBrowserTransport:
         """Close a handed-off local browser (verified as ours) and delete its profile."""
         path, record = self._find_record(session_id)
         if record is None:
+            return
+        if record.get("target_id"):  # shared browser: close only this request's tab, never the browser
+            if self.session_status(session_id) == "RUNNING":
+                self._close_target(record)
+            path.unlink(missing_ok=True)
             return
         profile = Path(record["profile_dir"])
         if self.session_status(session_id) == "RUNNING":

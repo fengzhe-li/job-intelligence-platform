@@ -76,10 +76,10 @@ def _canonical_bank_values(*, skip_if_absent: bool = True) -> set[str]:
 
 
 # A. nationality
-def test_a_missing_nationality_is_unresolved_never_a_literal() -> None:
+def test_a_missing_nationality_is_never_a_literal() -> None:
     task = generate_airtap_task(_package(_without("nationality", "citizenship")), {})
-    assert "- Country of Nationality: UNRESOLVED" in task
-    assert "- Country of Citizenship: UNRESOLVED" in task
+    assert "- Country of Nationality: HUMAN-ONLY (never fill; leave untouched for the candidate and STOP if required)" in task
+    assert "- Country of Citizenship: HUMAN-ONLY (never fill; leave untouched for the candidate and STOP if required)" in task
     for value in _canonical_bank_values():
         assert value not in task, value
 
@@ -105,11 +105,11 @@ def test_c_missing_work_authorization_answer_fails_closed(field) -> None:
         generate_airtap_task(_package(_without(field)), {})
 
 
-def test_c_missing_visa_details_are_unresolved_not_guessed() -> None:
+def test_c_missing_visa_details_are_human_only_not_guessed() -> None:
     task = generate_airtap_task(_package(_without("visa_status", "visa_expiry", "require_skilled_worker_sponsorship")), {})
-    assert "- Current UK Visa Status: UNRESOLVED" in task
-    assert "- Current Visa Expiry: UNRESOLVED" in task
-    assert "- Will you require Skilled Worker sponsorship: UNRESOLVED" in task
+    assert "- Current UK Visa Status: HUMAN-ONLY (never fill; leave untouched for the candidate and STOP if required)" in task
+    assert "- Current Visa Expiry: HUMAN-ONLY (never fill; leave untouched for the candidate and STOP if required)" in task
+    assert "- Will you require Skilled Worker sponsorship: HUMAN-ONLY (never fill; leave untouched for the candidate and STOP if required)" in task
     assert "Student visa" not in task and "Graduate Route" not in task
 
 
@@ -141,11 +141,14 @@ def test_e_complete_package_renders_every_approved_answer_exactly() -> None:
     assert missing_required_answers(package) == []
     for label, value in [("Legal First Name", "Sam"), ("Email Address", "sam@example.org"),
                          ("Full Current Address", COMPLETE["full_address"]), ("Postcode", "SA1 2BB"),
-                         ("Current legal right to work in the UK", "Yes"),
-                         ("Permanent or unrestricted right to work in the UK (never map from ordinary right to work)", "No"),
-                         ("Will you now or in future require visa sponsorship", "Yes"),
-                         ("Current UK Visa Status", "Graduate visa"), ("Country of Nationality", "Samplish")]:
+                         ("City / Town", "Sampleton")]:
         assert f"- {label}: {value}" in task
+    # Work authorisation / immigration is human-only (2026-10-13): no value reaches the agent.
+    for label in ("Current legal right to work in the UK", "Will you now or in future require visa sponsorship",
+                  "Current UK Visa Status", "Current Visa Expiry", "Country of Nationality"):
+        assert f"- {label}: HUMAN-ONLY" in task
+    for value in ("Graduate visa", "2028-05-31", "Samplish"):
+        assert value not in task
     # G (hard stop) is unchanged
     assert "Do NOT click Submit" in task and "Never click final Submit under any circumstances" in task
     # The handoff module uses the very same package-only generator.

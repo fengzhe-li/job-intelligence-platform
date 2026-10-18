@@ -94,3 +94,18 @@ class ProjectSelectionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_a_low_level_category_the_jd_signals_strongly_is_weighted_even_when_the_archetype_omits_it():
+    """2026-10-15: a Linux / C/C++ role whose title names no family ("Junior ... Software Engineer") must favour
+    Linux-systems and C evidence; broad categories (Backend, ML/AI) are never added this way."""
+    from jobintel.matching.project_selection import archetype_category_weights
+    from jobintel.models.job import Job, RoleTrackProfile
+    job = Job(id="j", title="Junior Software Engineer", company="Example Co", locations=[], source_observations=[],
+              description="Work on Linux, the kernel and C/C++ firmware with resilience in mind. Python APIs welcome.",
+              role_track_profile=RoleTrackProfile([]))
+    weights = archetype_category_weights(job)
+    assert weights.get("Systems", 0) >= 1.0 and weights.get("Embedded", 0) >= 1.0
+    plain = Job(id="k", title="Junior Software Engineer", company="Example Co", locations=[], source_observations=[],
+                description="Build Python APIs and databases.", role_track_profile=RoleTrackProfile([]))
+    assert "Systems" not in archetype_category_weights(plain) and "Embedded" not in archetype_category_weights(plain)

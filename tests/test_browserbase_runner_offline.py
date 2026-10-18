@@ -165,12 +165,13 @@ def test_c_sensitive_questions_escalate_even_with_an_approved_value(tmp_path, se
     result = run(page, bundle)
     assert result.status == "needs_human_input"
     reasons = {q["question"]: q["screenshot_or_evidence"] for q in result.questions_escalated}
-    assert reasons == {"Nationality": "runner:sensitive:nationality"}
+    assert reasons["Nationality"] == "runner:sensitive:nationality"
     assert dom_values(page, ["nat"]) == {"nat": ""}
-    # The one unambiguous sponsorship wording (stop_only.DETERMINISTIC_QUESTIONS) is answered from the
-    # approved package; any other sponsorship / right-to-work wording still escalates.
-    assert page.eval_on_selector_all("input[name=spons]", "els => els.filter(e => e.checked).map(e => e.value)") == ["y"]
-    assert [f["field"] for f in result.fields_filled] == ["email", "require_sponsorship_now_or_future"]
+    # Work authorisation is human-only: even the unambiguous sponsorship wording is never answered.
+    assert [r for r in reasons.values() if "work_authorisation" in r] == [
+        "runner:human_only:work_authorisation:require_sponsorship_now_or_future"]
+    assert page.eval_on_selector_all("input[name=spons]", "els => els.filter(e => e.checked).map(e => e.value)") == []
+    assert [f["field"] for f in result.fields_filled] == ["email"]
     assert_no_submission(server, result)
 
 

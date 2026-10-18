@@ -110,3 +110,18 @@ class GraduateSourceManualImportTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_two_separate_one_url_imports_without_an_id_get_distinct_stable_ids():
+    """2026-10-16: two one-record manual imports (different postings, no source id) both got "manual-1" and
+    the second merged into the first job. The fallback id now comes from the posting URL."""
+    query = ConnectorQuery(keywords=(), limit=10)
+    record = lambda url: {"title": "Graduate Engineer", "company": "Example Co", "url": url,  # noqa: E731
+                          "description": "Build software."}
+    first = ManualSourceConnector(PROSPECTS, (record("https://example.com/jobs/1"),)).fetch_jobs(query)[0]
+    second = ManualSourceConnector(PROSPECTS, (record("https://example.com/jobs/2"),)).fetch_jobs(query)[0]
+    again = ManualSourceConnector(PROSPECTS, (record("https://example.com/jobs/1"),)).fetch_jobs(query)[0]
+    assert first.source_job_id != second.source_job_id and first.source_job_id == again.source_job_id
+    assert first.source_job_id.startswith("manual-") and first.source_job_id != "manual-1"
+    with_id = ManualSourceConnector(PROSPECTS, ({**record("https://example.com/jobs/3"), "job_id": "R-9"},))
+    assert with_id.fetch_jobs(query)[0].source_job_id == "R-9"

@@ -153,7 +153,9 @@ def normalise_location(raw: str | None) -> Location:
         work_mode = WorkMode.ONSITE
 
     uk_tokens = ("united kingdom", "uk", "england", "scotland", "wales", "london", "manchester", "cambridge", "oxford")
-    country = "United Kingdom" if any(token in lowered for token in uk_tokens) else value
+    # Whole words only, and never the Wales of "New South Wales" / the England of "New England".
+    uk_text = re.sub(r"new south wales|new england", " ", lowered)
+    country = "United Kingdom" if any(re.search(rf"(?<![a-z]){re.escape(t)}(?![a-z])", uk_text) for t in uk_tokens) else value
     city = None
     region = None
     known_cities = (
@@ -182,7 +184,7 @@ def normalise_location(raw: str | None) -> Location:
         "england": (None, "England"),
     }
     for marker, (marker_city, marker_region) in region_markers.items():
-        if marker in lowered:
+        if re.search(rf"(?<![a-z]){re.escape(marker)}(?![a-z])", uk_text):
             city = marker_city or city
             region = marker_region
             break

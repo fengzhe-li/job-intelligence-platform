@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from jobintel.matching.cv_review_export import export_cv_for_review, review_filename
+from jobintel.matching.cv_review_export import company_display_name, export_cv_for_review, review_filename
 from jobintel.storage.application_store import ApplicationStore
 from test_application_attach_cv_cli import attach, second_cv
 from test_submission_service import setup  # noqa: F401  (pytest fixture)
@@ -30,14 +30,39 @@ def sha(path) -> str:
 
 @pytest.mark.parametrize("args,expected", [
     (("Alex Example",), "Alex_Example_CV.pdf"),
-    (("Alex Example", "examplecorp", "Junior Software Engineer"), "Alex_Example_Examplecorp_Junior-Software-Engineer_CV.pdf"),
-    (("Alex Example", "Acme/../Corp", "Engineer (C++) – 2027"), "Alex_Example_Acme-Corp_Engineer-C-2027_CV.pdf"),
-    (("Zoë Ü", "Café Ltd.", "Dév"), "Zoe_U_Cafe-Ltd_Dev_CV.pdf"),
+    (("Alex Example", "examplecorp", "Junior Software Engineer"), "Alex_Example_Examplecorp_Junior_Software_Engineer_CV.pdf"),
+    (("Alex Example", "ExampleLabs", "Forward Deployed Engineer - Software Engineer - United Kingdom"),
+     "Alex_Example_ExampleLabs_Forward_Deployed_Engineer_CV.pdf"),        # qualifier after a spaced dash dropped
+    (("Alex Example", "Acme/../Corp", "Engineer (C++) – 2027"), "Alex_Example_Acme_Corp_Engineer_C_CV.pdf"),
+    (("Alex Example", "Example Co", "Software Engineer II, Backend | Payments"), "Alex_Example_Example_Co_Software_Engineer_II_Backend_CV.pdf"),
+    (("Alex Example", "Example Co", "Back-End Engineer"), "Alex_Example_Example_Co_Back_End_Engineer_CV.pdf"),  # unspaced hyphen kept as a word break
+    (("Zoë Ü", "Café Ltd.", "Dév"), "Zoe_U_Cafe_Ltd_Dev_CV.pdf"),
+    (("Alex Example", "Example Co", "Engineer.pdf"), "Alex_Example_Example_Co_Engineer_CV.pdf"),  # never .pdf.pdf
     (("Alex Example", "", None), "Alex_Example_CV.pdf"),
 ])
 def test_filenames_are_readable_and_safe(args, expected):
     name = review_filename(*args)
     assert name == expected and Path(name).name == name
+    assert name.count(".pdf") == 1 and review_filename(*args) == name  # deterministic
+
+
+def test_long_titles_are_cut_on_a_word_boundary():
+    name = review_filename("Alex Example", "Example Co", "Platform " * 20)
+    role = name.removeprefix("Alex_Example_Example_Co_").removesuffix("_CV.pdf")
+    assert len(role) <= 60 and set(role.split("_")) == {"Platform"}
+
+
+def test_company_display_name_comes_from_the_registry(tmp_path):
+    registry = tmp_path / "companies.json"
+    registry.write_text(json.dumps([{"company_name": "ExampleLabs", "connector_token": "examplelabs",
+                                     "ashby_board_name": "examplelabs"}]))
+    assert company_display_name("examplelabs", registry) == "ExampleLabs"
+    assert company_display_name("ExampleLabs", registry) == "ExampleLabs"
+    assert company_display_name("unknown-co", registry) == "unknown-co"  # unchanged, then sanitized as usual
+    assert company_display_name("examplelabs", tmp_path / "missing.json") == "examplelabs"
+    assert review_filename("Alex Example", company_display_name("examplelabs", registry),
+                           "Forward Deployed Engineer - Software Engineer - United Kingdom") == (
+        "Alex_Example_ExampleLabs_Forward_Deployed_Engineer_CV.pdf")
 
 
 def test_copy_is_byte_identical_and_verified(setup, dl):

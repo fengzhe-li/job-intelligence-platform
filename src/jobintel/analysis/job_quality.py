@@ -76,6 +76,8 @@ SENIORITY_PATTERNS: tuple[tuple[str, float, tuple[str, ...]], ...] = (
     ("mid-level", -0.25, ("mid-level", "mid level")),
 )
 
+_ABOVE_MID = frozenset({"senior", "staff", "principal", "lead", "manager", "director", "head"})
+
 JD_SENIORITY_PATTERNS: tuple[tuple[str, float, tuple[str, ...]], ...] = (
     ("intern", 1.0, ("internship",)),
     (
@@ -178,6 +180,12 @@ ADJACENT_INDUSTRIAL_DOMAIN_PATTERNS: tuple[tuple[str, float, tuple[str, ...]], .
 def extract_seniority(title: str, description: str) -> SenioritySignal:
     title_text = title.casefold()
     text = f"{title}\n{description}".casefold()
+    # An explicit senior-or-above word in the title outranks a numeric ladder suffix: "Senior Software
+    # Engineer I" is a senior role at the first senior step, never a junior one.
+    for level, score, phrases in SENIORITY_PATTERNS:
+        if level in _ABOVE_MID and any(_contains_phrase(title_text, phrase) for phrase in phrases):
+            return SenioritySignal(level, score, f"{level.replace('-', ' ').title()}-level role from title phrase "
+                                                 f"'{next(p for p in phrases if _contains_phrase(title_text, p))}'")
     ladder = _title_ladder_signal(title)
     if ladder:
         return ladder

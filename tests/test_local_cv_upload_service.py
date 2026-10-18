@@ -6,6 +6,7 @@ caller never supplies a path. The handed-off window shows the uploaded CV; nothi
 """
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -74,15 +75,20 @@ def test_A_C_L_service_uploads_the_approved_cv_and_hands_over_an_unsubmitted_dra
     form = events["browserbase_evidence"]["live"]["form"]
     assert (form["cv_upload_status"], form["cv_artifact_id"], form["cv_upload_visible_in_page"]) == (
         "uploaded", s.artifact.id, True)
-    assert {"location", "require_sponsorship_now_or_future", "permanent_or_unrestricted_right_to_work"} <= {
-        f["field"] for f in form["fields_filled"]}
+    filled = {f["field"] for f in form["fields_filled"]}
+    assert "location" in filled  # work authorisation is human-only: never filled
+    assert not filled & {"require_sponsorship_now_or_future", "permanent_or_unrestricted_right_to_work"}
     # The storage host received exactly the approved PDF's bytes.
     assert [h for _, h, _ in server.storage] == [STORAGE]
     assert Path(s.artifact.pdf_path).read_bytes() in server.storage[0][2]
     # Handoff: the window shows the uploaded CV, nothing was submitted, the human finishes.
     assert out["final_submit_clicked"] is False and out["handoff"] == "local_browser_active"
     assert out["page_guard_released"] is True
-    assert resume_shown(run) == ("Alex_Example_CV.pdf", "0")
+    # J: the ATS shows the review copy's naming <Name>_<Company>_<Role>_CV.pdf (company/role from the package).
+    assert resume_shown(run) == ("Alex_Example_ExampleCo_Graduate_Engineer_CV.pdf", "0")
+    # K: only the name changed -- the uploaded bytes are the sealed PDF, same SHA-256.
+    sealed = Path(s.artifact.pdf_path).read_bytes()
+    assert hashlib.sha256(sealed).hexdigest() == s.artifact.pdf_sha256 == audit["cv_pdf_sha256"]
     assert "ApiSubmitApplication" not in server.operations and server.external == []
     no_receipt_and_not_applied(s)
     assert_released(run)

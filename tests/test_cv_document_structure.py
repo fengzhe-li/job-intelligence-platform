@@ -385,8 +385,12 @@ class CVDocumentStructureTests(unittest.TestCase):
         artifact = generate_cv(candidate, _job(), store_root=self.tmp)
         _, pdf_text = _pdf_text(artifact.pdf_path)
 
-        self.assertEqual(artifact.document["sections_missing"], ["summary", "education", "experience"])
-        for heading in ("PROFESSIONAL SUMMARY", "EDUCATION", "INTERNSHIP EXPERIENCE"):
+        # Since 2026-10-15 the summary is composed from the page's own project evidence (target identity, then
+        # evidence -- cv_summary), so it no longer needs an authored CV; education / experience are still
+        # reported missing and never invented.
+        self.assertEqual(artifact.document["sections_missing"], ["education", "experience"])
+        self.assertTrue(artifact.document["summary"])
+        for heading in ("EDUCATION", "INTERNSHIP EXPERIENCE"):
             self.assertNotIn(heading, pdf_text)
         self.assertNotEqual(artifact.review_status, ReviewGateStatus.AUTO_PREPARE)
         self.assertTrue(any("missing core section" in reason for reason in artifact.review_reasons))

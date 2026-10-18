@@ -181,3 +181,42 @@ class TestTransferableFallback:
             assert artifact.review_status == ReviewGateStatus.BLOCK_AUTO_SUBMISSION
             assert not any("missing core section(s): projects" in reason for reason in artifact.review_reasons)
 
+
+
+# --- E: capability shown by implementation/validation evidence, not by a tool name (2026-10-13) ---
+
+RESILIENCE_JD = (
+    "Required: Java. Build resilient platforms, write lots of tests (TDD), automate as much as possible; "
+    "we care about latency."
+)
+VALIDATED_SYSTEMS = [
+    ("Linux", SkillCategory.DEVOPS, "Progressive migration framework: native process migration (5/5 final trials)."),
+    ("Bash", SkillCategory.LANGUAGE, "Automated testbed scripts orchestrating state capture and downtime measurement."),
+    ("TCP/IP", SkillCategory.NETWORK, "Floating VIP preserves an active session without disconnecting the client."),
+]
+
+
+class TestEvidenceGroundedDimensions:
+    def test_e_repeated_validation_and_orchestration_evidence_count_without_a_test_framework(self) -> None:
+        job = _job(RESILIENCE_JD)
+        candidate = _candidate({"svc": TESTED_SERVICE, "systems": VALIDATED_SYSTEMS})
+        selected, explanations, _ = select_top_projects_hybrid(job, candidate)
+        systems = next(match for match in selected if match.project.id == "systems")
+        assert {"testing", "automation", "resilience", "systems_performance"} <= set(systems.transferable_dimensions)
+        assert "'5/5 final trials'" in explanations["systems"]
+        # Grounded relevance only -- no skill or requirement is created.
+        assert systems.matched_requirements == [] and systems.missing_requirements == ["java"]
+        assert "no grounded evidence for required: Java" in explanations["systems"]
+
+    def test_e_a_dimension_the_jd_does_not_name_never_counts(self) -> None:
+        job = _job("Required: Java. You will write lots of tests.")
+        candidate = _candidate({"systems": VALIDATED_SYSTEMS})
+        selected, _, _ = select_top_projects_hybrid(job, candidate)
+        assert [set(m.transferable_dimensions) for m in selected] == [{"testing"}]
+
+    def test_e_a_fourth_qualifying_project_may_be_selected_but_never_filler(self) -> None:
+        job = _job(RESILIENCE_JD)
+        candidate = _candidate({"a": TESTED_SERVICE, "b": TESTED_SERVICE, "c": TESTED_SERVICE,
+                                "systems": VALIDATED_SYSTEMS, "ml": ML_ONLY})
+        selected, _, _ = select_top_projects_hybrid(job, candidate, max_projects=4)
+        assert len(selected) == 4 and "ml" not in {m.project.id for m in selected}

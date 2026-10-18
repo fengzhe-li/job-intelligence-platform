@@ -49,8 +49,105 @@ PROJECT_PURPOSE_MAP: dict[str, ProjectPurpose] = {
     "personal-source-2": ProjectPurpose.AI_ML_RESEARCH,
 }
 
-# Domain overlap groups for portfolio non-redundancy
-FINANCIAL_DOMAIN_PROJECTS = {"personal-source-afra", "personal-source-6"}
+# JD-evidence irrelevance (2026-10-15), replacing the former name-based exclusions. A capability is
+# "ubiquitous" for a JD when at least half of the candidate projects evidence it (Python, typically): matching
+# it says nothing distinct about a project.
+UBIQUITOUS_SHARE = 0.5
+
+
+def evidence_irrelevance(candidate: dict, candidates: Sequence[dict]) -> str | None:
+    """Why a candidate project is irrelevant to this JD on its evidence, or None if it stays eligible.
+
+    Earlier filters already dropped projects with no JD-matched evidence and projects whose every purpose is
+    unsuited to the role (affinity < -1). Here a project is also dropped when its kind of engineering has no
+    affinity for the role (affinity <= 0) AND every JD requirement it matches is ubiquitous among the candidate
+    projects -- it would add only what the others already show. Project, employer and domain names play no part.
+    """
+    if candidate["affinity"] > 0.0:
+        return None
+    counts: dict[str, int] = {}
+    for other in candidates:
+        for req in {r.casefold() for r in other["matched_requirements"]}:
+            counts[req] = counts.get(req, 0) + 1
+    threshold = max(2, UBIQUITOUS_SHARE * len(candidates))
+    distinct = [r for r in candidate["matched_requirements"] if counts.get(r.casefold(), 0) < threshold]
+    if distinct:
+        return None
+    return ("no role affinity and only ubiquitous JD matches ("
+            + ", ".join(candidate["matched_requirements"]) + ")")
+
+
+# Portfolio non-redundancy (2026-10-15). A shared business domain is NOT redundancy: two projects in the same
+# domain that show different engineering capabilities may both be selected. Redundancy is measured from what
+# the projects actually evidence -- capability overlap (rarity-weighted, so a near-universal skill such as
+# Python barely counts), repeated problem shape (purposes), repeated JD requirements and shared evidence (the
+# same evidence item or the same repository) -- against the most similar already-selected project.
+REDUNDANCY_WEIGHTS = {"capabilities": 0.45, "problem_shape": 0.25, "requirements": 0.15, "evidence": 0.15}
+MAX_REDUNDANCY_PENALTY = 0.6  # the score multiplier never drops below 0.4: redundancy is subordinate to relevance
+
+
+@dataclass(frozen=True)
+class ProjectFootprint:
+    """What a project evidences, independent of its name, company or business domain."""
+    capabilities: frozenset[str]
+    purposes: frozenset[str]
+    requirements: frozenset[str]
+    evidence: frozenset[str]  # evidence ids and the source repository
+
+
+def project_footprint(project, profile, matched_requirements=()) -> ProjectFootprint:
+    caps, evidence = set(), set()
+    for cap in profile.capabilities.values():
+        linked = [ev for ev in cap.evidence if ev.project_id == project.id]
+        if linked and cap.evidence_tier in {"strong", "partial"}:
+            caps.add(cap.name.casefold())
+            evidence |= {ev.id for ev in linked if ev.id}
+    if getattr(project, "repository_full_name", None):
+        evidence.add("repo:" + project.repository_full_name.casefold())
+    return ProjectFootprint(frozenset(caps), frozenset(p.value for p in project_purposes(project, profile)),
+                            frozenset(r.casefold() for r in matched_requirements), frozenset(evidence))
+
+
+def _overlap(a, b, weight=lambda _: 1.0) -> float:
+    """Weighted share of `a` already present in `b` (0 when `a` is empty)."""
+    total = sum(weight(x) for x in a)
+    return sum(weight(x) for x in a & b) / total if total else 0.0
+
+
+def redundancy(candidate: ProjectFootprint, selected: Sequence[ProjectFootprint],
+               capability_frequency: dict[str, int] | None = None, population: int = 1) -> float:
+    """0 (complementary) .. 1 (repeats an already-selected project), against the most similar selected one."""
+    if not selected:
+        return 0.0
+    freq = capability_frequency or {}
+    rarity = lambda cap: 1.0 / max(1, freq.get(cap, 1)) if freq else 1.0  # noqa: E731
+    best = 0.0
+    for other in selected:
+        score = (REDUNDANCY_WEIGHTS["capabilities"] * _overlap(candidate.capabilities, other.capabilities, rarity)
+                 + REDUNDANCY_WEIGHTS["problem_shape"] * _overlap(candidate.purposes, other.purposes)
+                 + REDUNDANCY_WEIGHTS["requirements"] * _overlap(candidate.requirements, other.requirements)
+                 + REDUNDANCY_WEIGHTS["evidence"] * (1.0 if candidate.evidence & other.evidence else 0.0))
+        best = max(best, score)
+    return round(best, 3)
+
+# A project is not one identity: each implemented capability slice of its repository (repo_capability_map,
+# surfaced as the category of its code-derived evidence) adds a purpose next to the curated primary one.
+_CATEGORY_PURPOSE = {"Frontend": ProjectPurpose.FULLSTACK_APPLICATION, "Backend": ProjectPurpose.FULLSTACK_APPLICATION,
+                     "Systems": ProjectPurpose.SYSTEMS_INFRASTRUCTURE, "Cloud": ProjectPurpose.IOT_CLOUD_EVENT,
+                     "Embedded": ProjectPurpose.EMBEDDED_FIRMWARE, "ML/AI": ProjectPurpose.AI_ML_RESEARCH,
+                     "Modeling": ProjectPurpose.AI_ML_RESEARCH, "Database": ProjectPurpose.DATA_INTELLIGENCE}
+
+
+def project_purposes(project, profile) -> list[ProjectPurpose]:
+    """The curated primary purpose plus one per implemented capability slice (code-derived evidence)."""
+    purposes = [PROJECT_PURPOSE_MAP.get(project.id, ProjectPurpose.SYSTEMS_INFRASTRUCTURE)]
+    for cap in profile.capabilities.values():
+        for ev in cap.evidence:
+            if ev.project_id == project.id and ":capmap:" in ev.id and ev.category in _CATEGORY_PURPOSE:
+                purpose = _CATEGORY_PURPOSE[ev.category]
+                if purpose not in purposes:
+                    purposes.append(purpose)
+    return purposes
 
 # Alias dictionary to resolve common historical or narrative project names to canonical IDs
 CANONICAL_PROJECT_ALIASES: dict[str, str] = {
@@ -173,26 +270,35 @@ class TailoringSkillPolicy:
 
 
 def classify_role_archetype(job: Job) -> str:
-    """Classifies the target role archetype based on job title, role tracks, description, and company."""
+    """Classifies the target role archetype from the job title, role tracks and description -- never from the
+    employer's name (a bank or a racing team can hire for any kind of engineering)."""
     title_lower = job.title.lower()
     desc_lower = (job.description or "").lower()
-    company_lower = (job.company or "").lower()
     primary_track = job.role_track_profile.primary()
     track_name = primary_track.track.value if primary_track else ""
 
     # Motorsport
     if (
         "motorsport" in track_name
-        or any(k in title_lower for k in ["motorsport", "racing", "f1", "powertrain", "simulation", "langham", "red bull"])
-        or any(k in company_lower for k in ["mclaren", "red bull", "williams", "mercedes", "ferrari", "aston martin"])
+        or any(k in title_lower for k in ["motorsport", "racing", "f1", "powertrain", "simulation"])
         or any(k in desc_lower[:600] for k in ["motorsport", "racing", "powertrain", "race car", "engine control"])
     ):
         return "motorsport"
 
+    # A web / full-stack TITLE decides before any role-track inference from the description (a web role whose
+    # JD mentions "scalable infrastructure" is still a web role).
+    if any(k in title_lower for k in ["web engineer", "web developer", "frontend", "front-end", "front end",
+                                      "full-stack", "full stack", "fullstack"]):
+        return "fullstack"
+    # Likewise an AI / ML title ("Software Engineer (ML Projects)") before track inference ("cloud-native").
+    if re.search(r"\b(ai|ml|machine learning|llm|genai|agents?)\b", title_lower):
+        return "ai_applied_ai"
+
     # Platform / Cloud / Systems / HPC
     if (
         any(k in track_name for k in ["infrastructure", "platform", "devops", "cloud", "network"])
-        or any(k in title_lower for k in ["hpc", "sre", "platform", "infrastructure", "systems", "linux", "cloud", "endpoint"])
+        or any(k in title_lower for k in ["hpc", "sre", "platform", "infrastructure", "systems", "linux", "cloud", "endpoint",
+                                           "site reliability", "reliability"])
     ):
         return "platform_cloud_systems"
 
@@ -206,7 +312,6 @@ def classify_role_archetype(job: Job) -> str:
     # FinTech / Finance / Tax / Banking
     if (
         any(k in title_lower for k in ["tax", "fintech", "financial", "trading", "quant", "banking"])
-        or any(k in company_lower for k in ["barclays", "morgan stanley", "kpmg", "goldman", "jpmorgan"])
         or any(k in desc_lower[:500] for k in ["tax technology", "fintech", "investment bank", "financial services", "corporate tax", "trading platform"])
     ):
         return "fintech"
@@ -214,7 +319,8 @@ def classify_role_archetype(job: Job) -> str:
     # Fullstack
     if (
         "full_stack" in track_name
-        or any(k in title_lower for k in ["full-stack", "full stack", "fullstack", "web developer", "frontend"])
+        or any(k in title_lower for k in ["full-stack", "full stack", "fullstack", "web developer", "web engineer",
+                                           "frontend", "front-end", "front end"])
     ):
         return "fullstack"
 
@@ -234,7 +340,7 @@ def get_purpose_affinity(archetype: str, purpose: ProjectPurpose, job: Job | Non
     if archetype == "motorsport":
         # Motorsport roles value simulation, embedded firmware, systems, and IoT/telemetry
         if "powertrain" in job_title or "powertrain" in job_desc:
-            # Red Bull Powertrains: embedded firmware and systems take precedence
+            # Powertrain roles: embedded firmware and systems take precedence
             if purpose == ProjectPurpose.EMBEDDED_FIRMWARE:
                 return 4.5
             if purpose == ProjectPurpose.SYSTEMS_INFRASTRUCTURE:
@@ -299,7 +405,7 @@ def get_purpose_affinity(archetype: str, purpose: ProjectPurpose, job: Job | Non
                 return 2.5
             return -3.0
         else:
-            # General FinTech / Banking (Barclays, Morgan Stanley)
+            # General FinTech / Banking
             if purpose == ProjectPurpose.AI_AGENT_ARCHITECTURE:
                 return 4.8
             if purpose == ProjectPurpose.SYSTEMS_INFRASTRUCTURE:
@@ -310,7 +416,7 @@ def get_purpose_affinity(archetype: str, purpose: ProjectPurpose, job: Job | Non
                 return 3.5
             if purpose == ProjectPurpose.DATA_INTELLIGENCE:
                 return 2.8
-            # Simulation (Indy 500) and STM32 have negative affinity for FinTech/Tax
+            # Simulation and embedded-firmware purposes have negative affinity for FinTech/Tax
             return -3.0
 
     if archetype == "fullstack":
@@ -339,7 +445,7 @@ def get_purpose_affinity(archetype: str, purpose: ProjectPurpose, job: Job | Non
         return 3.2
     if purpose == ProjectPurpose.DATA_INTELLIGENCE:
         return 2.8
-    # Indy 500 & STM32 receive negative affinity in general SWE to prevent "motorsport CV"
+    # Simulation and embedded-firmware purposes receive negative affinity in general SWE
     return -2.0
 
 
@@ -454,32 +560,14 @@ class PolicyProjectSelector:
         all_names = {item.name.casefold(): item for item in job.skill_requirements}
         primary_track = job.role_track_profile.primary()
 
-        # Check explicit role exclusions
-        excluded_pids: set[str] = set()
-        job_desc = (job.description or "").lower()
-        job_title = job.title.lower()
-
-        # Powertrains role excludes Auditable Financial Research Agent
-        if archetype == "motorsport" and ("powertrain" in job_title or "powertrain" in job_desc or "red bull" in job_title):
-            excluded_pids.add("personal-source-afra")
-
-        # Tax / FinTech SWE excludes Indy 500
-        if archetype == "fintech" and ("tax" in job_title or "kpmg" in job_title or "tax" in job_desc or "barclays" in job.company.lower()):
-            excluded_pids.add("personal-source-indy500")
-
-        # General Graduate SWE excludes motorsport simulation unless requested
-        if archetype == "backend_general_swe":
-            if not any(k in job_desc for k in ["motorsport", "racing", "simulation", "embedded"]):
-                excluded_pids.add("personal-source-indy500")
-
+        # No project is excluded by name, and no role by employer: exclusion is decided below from each
+        # project's evidenced capabilities against this JD (see `evidence_irrelevance`).
         candidate_evaluations: list[dict[str, Any]] = []
 
         for project in profile.projects:
-            if project.id in excluded_pids:
-                continue
 
-            purpose = PROJECT_PURPOSE_MAP.get(project.id, ProjectPurpose.SYSTEMS_INFRASTRUCTURE)
-            affinity = get_purpose_affinity(archetype, purpose, job)
+            purpose, affinity = max(((p, get_purpose_affinity(archetype, p, job)) for p in project_purposes(project, profile)),
+                                    key=lambda item: item[1])
 
             # Negative affinity indicates project is fundamentally unsuited to the role
             if affinity < -1.0:
@@ -521,19 +609,27 @@ class PolicyProjectSelector:
             raw_score = skill_score + role_track_bonus + affinity
 
             candidate_evaluations.append({
+                "skill_score": skill_score,
                 "project": project,
                 "purpose": purpose,
                 "raw_score": raw_score,
                 "matched_requirements": matched_requirements,
                 "affinity": affinity,
-                "is_financial": project.id in FINANCIAL_DOMAIN_PROJECTS,
+                "footprint": project_footprint(project, profile, matched_requirements),
             })
+
+        candidate_evaluations = [c for c in candidate_evaluations
+                                 if evidence_irrelevance(c, candidate_evaluations) is None]
 
         # Greedy selection enforcing purpose & domain non-redundancy
         selected_matches: list[ProjectPolicyMatch] = []
         covered_purposes: set[ProjectPurpose] = set()
         covered_skills: set[str] = set()
-        financial_covered = False
+        selected_footprints: list[ProjectFootprint] = []
+        capability_frequency: dict[str, int] = {}
+        for cand in candidate_evaluations:
+            for cap in cand["footprint"].capabilities:
+                capability_frequency[cap] = capability_frequency.get(cap, 0) + 1
         remaining = list(candidate_evaluations)
 
         while remaining and len(selected_matches) < max_projects:
@@ -542,18 +638,9 @@ class PolicyProjectSelector:
             best_discount = 0.0
 
             for cand in remaining:
-                current_score = cand["raw_score"]
-                discount = 0.0
-
-                if cand["purpose"] in covered_purposes:
-                    discount += 0.3
-                    current_score *= 0.7
-
-                if cand["is_financial"] and financial_covered:
-                    # In fintech roles, financial domain projects overlap heavily; outside fintech, it is a mild tie-breaker
-                    domain_penalty = 0.5 if archetype == "fintech" else 0.15
-                    discount += domain_penalty
-                    current_score *= (1.0 - domain_penalty)
+                discount = round(MAX_REDUNDANCY_PENALTY * redundancy(
+                    cand["footprint"], selected_footprints, capability_frequency, len(candidate_evaluations)), 3)
+                current_score = cand["raw_score"] * (1.0 - discount)
 
                 if current_score > best_eval_score:
                     best_eval_score = current_score
@@ -569,8 +656,7 @@ class PolicyProjectSelector:
             matched_reqs = best_candidate["matched_requirements"]
 
             covered_purposes.add(purpose)
-            if best_candidate["is_financial"]:
-                financial_covered = True
+            selected_footprints.append(best_candidate["footprint"])
 
             for r in matched_reqs:
                 covered_skills.add(r.casefold())

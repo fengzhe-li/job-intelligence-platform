@@ -28,15 +28,27 @@ class LayoutPreset:
     steps through them in order instead of shrinking content continuously."""
 
     name: str
-    margin_mm: float
+    margin_mm: float  # top / bottom
     body_pt: float
+    # Left / right; modestly narrower than top/bottom so lines reflow naturally instead of
+    # wrapping a word or two. None = the same as margin_mm.
+    side_margin_mm: float | None = None
+
+    @property
+    def sides_mm(self) -> float:
+        return self.margin_mm if self.side_margin_mm is None else self.side_margin_mm
 
 
+# Ordered by density. Margins tighten (sides first) before the body font shrinks.
 LAYOUT_PRESETS = (
-    LayoutPreset("normal", margin_mm=18.0, body_pt=10.0),
-    LayoutPreset("dense", margin_mm=15.0, body_pt=10.0),
+    LayoutPreset("normal", margin_mm=18.0, body_pt=10.0, side_margin_mm=15.0),
+    LayoutPreset("dense", margin_mm=15.0, body_pt=10.0, side_margin_mm=12.5),
+    # Tighter margins at the full 10pt body: used before any smaller font.
+    LayoutPreset("tight", margin_mm=12.5, body_pt=10.0, side_margin_mm=11.0),
+    # Narrowest full-size geometry (~9mm all round, still inside safe print margins).
+    LayoutPreset("slim", margin_mm=9.0, body_pt=10.0, side_margin_mm=9.0),
     # Densest standard preset: comparable to a candidate-authored one-page engineering CV
-    LayoutPreset("compact", margin_mm=12.5, body_pt=9.5),
+    LayoutPreset("compact", margin_mm=12.5, body_pt=9.5, side_margin_mm=11.0),
     # Narrower bounded preset: 10mm margins for maximum content density while maintaining font size >= 9.5pt
     LayoutPreset("narrow", margin_mm=10.0, body_pt=9.5),
 )
@@ -52,6 +64,7 @@ class RenderResult:
     # Fraction (0-1) of the last page's usable frame height occupied by content.
     page_utilization: float
     layout_preset: str = NORMAL_LAYOUT.name
+    side_margin_mm: float | None = None  # left/right; None = margin_mm (results recorded before it existed)
 
 
 class _MeasuringDocTemplate(SimpleDocTemplate):
@@ -65,20 +78,20 @@ class _MeasuringDocTemplate(SimpleDocTemplate):
 
 
 def render_cv_document(path: Path, doc: CVDocument, preset: LayoutPreset = NORMAL_LAYOUT) -> RenderResult:
-    margin_mm, body_pt = preset.margin_mm, preset.body_pt
+    margin_mm, body_pt, sides_mm = preset.margin_mm, preset.body_pt, preset.sides_mm
     path.parent.mkdir(parents=True, exist_ok=True)
     styles = _styles(body_pt)
     template = _MeasuringDocTemplate(
         str(path),
         pagesize=A4,
-        leftMargin=margin_mm * mm,
-        rightMargin=margin_mm * mm,
+        leftMargin=sides_mm * mm,
+        rightMargin=sides_mm * mm,
         topMargin=margin_mm * mm,
         bottomMargin=margin_mm * mm,
         title=f"{doc.name} - CV",
     )
     # Platypus frames pad their content by 6pt on each side.
-    width = A4[0] - 2 * margin_mm * mm - 12
+    width = A4[0] - 2 * sides_mm * mm - 12
 
     header = f"<b>{escape(doc.name)}</b>" + (f" | {escape(doc.headline)}" if doc.headline else "")
     story: list = [Paragraph(header, styles["name"])]
@@ -124,6 +137,7 @@ def render_cv_document(path: Path, doc: CVDocument, preset: LayoutPreset = NORMA
         body_pt=body_pt,
         page_utilization=round(template.last_frame_fill, 3),
         layout_preset=preset.name,
+        side_margin_mm=sides_mm,
     )
 
 

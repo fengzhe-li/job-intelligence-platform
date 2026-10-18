@@ -716,21 +716,34 @@ def narrow_summary(summary: str | None, grounded_corpus: str, policy: ImpactPoli
     spec = policy.spec["summary"]
     corpus = (grounded_corpus or "").casefold()
     text, removed = summary, []
-    for item in spec["unsupported_scope_items"]:
+    candidates = [(item, False) for item in spec["unsupported_scope_items"]] + [(item, True) for item in spec.get("generic_items", ())]
+    for item, always in candidates:
         item_re = re.compile(rf"(?<![\w-]){item}(?![\w])", re.I)
         found = item_re.search(text)
-        if not found or item_re.search(corpus):
+        if not found or (not always and item_re.search(corpus)):
             continue
-        phrase = found.group(0)
-        for pattern, replacement in ((rf",\s*{re.escape(phrase)}(?=[,.;])", ""), (rf"{re.escape(phrase)},\s*", ""),
-                                     (rf",?\s+and\s+{re.escape(phrase)}(?=[.;])", "")):
-            narrowed, count = re.subn(pattern, replacement, text, count=1)
-            if count:
-                text = narrowed
-                removed.append(phrase)
-                break
+        narrowed = _drop_enumeration_item(text, found.group(0))
+        if narrowed is not None:
+            text = narrowed
+            removed.append(found.group(0))
     generic = [m.group(0) for p in spec["generic_phrases"] for m in [re.search(rf"\b{p}\b", text, re.I)] if m]
     return text, removed, generic
+
+
+def _drop_enumeration_item(text: str, phrase: str) -> str | None:
+    """Remove one item from an "A, B and C" enumeration, keeping the list grammatical; None when the
+    phrase is not an enumeration item (then the summary is left alone)."""
+    item = re.escape(phrase)
+    for pattern, replacement in (
+        (rf",\s*{item}(?=[,.;])", ""),                                               # middle item
+        (rf"(?P<prev>[^,.;:]+), (?P<last>[^,.;:]+?),? and {item}(?![\w-])", r"\g<prev> and \g<last>"),  # last of 3+
+        (rf"\s+and\s+{item}(?![\w-])", ""),                                         # last of 2
+        (rf"(?<=\s){item},\s*", ""),                                                  # first item
+    ):
+        narrowed, count = re.subn(pattern, replacement, text, count=1)
+        if count:
+            return narrowed
+    return None
 
 
 # --- writing quality gate ---------------------------------------------------------------------
@@ -744,7 +757,10 @@ def writing_quality_report(
     project_evidence_text: dict[str, str] | None = None,
     project_allowed_tech: dict[str, set[str]] | None = None,
     repo_text: dict[str, str | None] | None = None,
+    repo_code: dict[str, str | None] | None = None,
     rewrites: Sequence[BulletRewrite] = (),
+    project_forbidden: dict[str, set[str]] | None = None,
+    repo_languages: dict[str, set[str] | None] | None = None,
 ) -> dict[str, Any]:
     """Diagnostics over the final document. Never a licence to rewrite truth."""
     from jobintel.matching.claim_grounding import extract_tech_entities
@@ -801,18 +817,10 @@ def writing_quality_report(
             continue
         leakage += [{"project_id": pid, "technology": tech, "text": text}
                     for tech in sorted(extract_tech_entities(text) - concepts) if tech not in allowed]
-    corroboration = []
-    if repo_text is not None:
-        for pid, text, _ in bullets:
-            for term in gate["corroboration_terms"]:
-                term_re = re.compile(rf"(?<![\w-]){term}(?![\w])" if not term.startswith("\\b") else term, re.I)
-                found = term_re.search(text)
-                if not found:
-                    continue
-                readme = repo_text.get(pid)
-                status = ("cache_unavailable" if readme is None else
-                          "corroborated" if term_re.search(readme) else "not_found_in_cached_readme")
-                corroboration.append({"project_id": pid, "claim": found.group(0), "status": status})
+    corroboration, claim_status = corroborate(
+        bullets, policy, repo_text=repo_text, project_evidence_text=project_evidence_text,
+        project_forbidden=project_forbidden, strengthened={r.rewritten_text for r in rewrites if r.changed},
+        repo_languages=repo_languages, repo_code=repo_code)
     lost = [{"project_id": r.source_project_id, "reason": reason} for r in rewrites for reason in r.refused
             if "qualifier_lost" in reason]
     return {
@@ -837,11 +845,85 @@ def writing_quality_report(
         "cross_project_leakage": leakage,
         "lost_qualifiers": lost,
         "corroboration": corroboration,
+        "claim_corroboration": claim_status,
         "rewrites": {"applied": sum(1 for r in rewrites if r.changed),
                      "refused_or_kept": sum(1 for r in rewrites if not r.changed),
                      "value_clauses": sum(1 for r in rewrites if r.value_rendered),
                      "review_required": sum(1 for r in rewrites if r.review_required)},
     }
+
+
+CORROBORATION_STATES = ("verified", "partial", "contradicted", "unavailable")
+
+
+def corroborate(
+    bullets: Sequence[tuple[str, str, Sequence[str]]],
+    policy: ImpactPolicy,
+    *,
+    repo_text: dict[str, str | None] | None,
+    project_evidence_text: dict[str, str],
+    project_forbidden: dict[str, set[str]] | None = None,
+    strengthened: set[str] = frozenset(),
+    repo_languages: dict[str, set[str] | None] | None = None,
+    repo_code: dict[str, str | None] | None = None,
+) -> tuple[list[dict], list[dict]]:
+    """Per-claim and per-bullet repository corroboration (see quality_gate.corroboration_actions).
+
+    Claims checked: the policy's risky corroboration terms plus every named technology in the bullet
+    (generic concepts excluded), and every recorded exclusion of the project/evidence. A missing README
+    is "unavailable", never "false"; same-project indexed evidence makes a README-silent claim "partial".
+    A programming-language claim is decided by the repository's GitHub languages record when present.
+    A README-silent claim is "verified" when the project's own repository code record (repo_code_evidence:
+    exact repository, pinned commit, import / dependency-manifest lines only) names it."""
+    from jobintel.matching.claim_grounding import extract_tech_entities
+    gate = policy.spec["quality_gate"]
+    concepts = {term.casefold() for term in policy.composition["generic_lowercase_terms"]}
+    languages_map = {str(k).casefold(): v for k, v in gate.get("language_terms", {}).items()}
+    claims, per_bullet = [], []
+    for pid, text, _ in bullets:
+        if repo_text is None:
+            break
+        readme = repo_text.get(pid)
+        indexed = project_evidence_text.get(pid, "")
+        found: dict[str, str] = {}
+        for phrase in sorted((project_forbidden or {}).get(pid, ())):
+            if phrase and re.search(rf"(?<![\w-]){re.escape(phrase)}(?![\w])", text, re.I):
+                found[phrase] = "contradicted"
+        patterns = [(term, re.compile(rf"(?<![\w-]){term}(?![\w])" if not term.startswith("\\b") else term, re.I))
+                    for term in gate["corroboration_terms"]]
+        patterns += [(tech, re.compile(rf"(?<![\w+#]){re.escape(tech)}(?![\w+#])", re.I))
+                     for tech in sorted(extract_tech_entities(text) - concepts)]
+        for _, pattern in patterns:
+            match = pattern.search(text)
+            if not match or match.group(0) in found:
+                continue
+            claim = match.group(0)
+            language = languages_map.get(claim.casefold())
+            known = (repo_languages or {}).get(pid)
+            if language and known is not None:
+                status = "verified" if language.casefold() in known else "contradicted"
+            elif readme is None:
+                status = "unavailable"
+            elif pattern.search(readme) or pattern.search((repo_code or {}).get(pid) or ""):
+                status = "verified"
+            elif pattern.search(indexed):
+                status = "partial"
+            else:
+                status = "contradicted"  # no same-project support at all
+            found[claim] = status
+        if "contradicted" in found.values():
+            bullet_status = "contradicted"
+        elif readme is None:
+            bullet_status = "unavailable"  # the rest of the wording cannot be checked
+        elif "partial" in found.values():
+            bullet_status = "partial"
+        else:
+            bullet_status = "verified"
+        is_strengthened = text in strengthened
+        claims += [{"project_id": pid, "claim": claim, "status": status, "strengthened": is_strengthened}
+                   for claim, status in found.items()]
+        per_bullet.append({"project_id": pid, "text": text, "status": bullet_status, "strengthened": is_strengthened})
+    return claims, per_bullet
 
 
 def writing_review_reasons(report: dict, rewrites: Sequence[BulletRewrite]) -> list[str]:
@@ -856,11 +938,20 @@ def writing_review_reasons(report: dict, rewrites: Sequence[BulletRewrite]) -> l
     if report.get("unsupported_absolute_claims"):
         flags = sorted({item["flag"].split(":", 1)[1] for item in report["unsupported_absolute_claims"]})
         reasons.append(f"Unsupported absolute/performance wording present: {', '.join(flags)}")
-    missing = sorted({f"{c['project_id']}:{c['claim']}" for c in report.get("corroboration", [])
-                      if c["status"] == "not_found_in_cached_readme"})
-    if missing:
-        reasons.append("Claim(s) not found in the project's own cached repository README -- verify before use: "
-                       + ", ".join(missing))
+    claims = report.get("corroboration", [])
+    contradicted = sorted({f"{c['project_id']}:{c['claim']}" for c in claims if c["status"] == "contradicted"})
+    if contradicted:
+        reasons.append("Claim(s) contradicted by the project's recorded exclusions or unsupported by any same-project "
+                       "evidence -- remove: " + ", ".join(contradicted))
+    partial = sorted({f"{c['project_id']}:{c['claim']}" for c in claims if c["status"] == "partial"})
+    if partial:
+        reasons.append("Claim(s) not found in the project's own cached repository README (same-project indexed "
+                       "evidence only) -- verify before use: " + ", ".join(partial))
+    unchecked = sorted({b["project_id"] for b in report.get("claim_corroboration", [])
+                        if b["status"] == "unavailable" and b["strengthened"]})
+    if unchecked:
+        reasons.append("Strengthened claim(s) whose project repository cannot be checked (README cache unavailable) "
+                       "-- verify before use: " + ", ".join(unchecked))
     if report.get("cross_project_leakage"):
         leaks = sorted({f"{x['project_id']}:{x['technology']}" for x in report["cross_project_leakage"]})
         reasons.append("Technology not evidenced by the bullet's own project: " + ", ".join(leaks))
@@ -868,6 +959,19 @@ def writing_review_reasons(report: dict, rewrites: Sequence[BulletRewrite]) -> l
         reasons.append("Ownership-escalation verb(s) present: " + ", ".join(
             sorted({x["verb"] for x in report["ownership_escalation_risk"]})))
     return reasons
+
+
+def repo_languages(store_root: Path | str, repository_full_name: str | None) -> set[str] | None:
+    """The repository's GitHub languages (casefolded) from the synced languages record; None if absent."""
+    import json
+    if not repository_full_name:
+        return None
+    try:
+        record = json.loads((Path(store_root) / "profile" / "github_languages.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    languages = record.get(repository_full_name)
+    return {name.casefold() for name in languages} if isinstance(languages, dict) else None
 
 
 def repo_readme_text(store_root: Path | str, repository_full_name: str | None) -> str | None:

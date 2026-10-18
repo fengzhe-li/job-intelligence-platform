@@ -12,6 +12,10 @@ from jobintel.submission.executors import BROWSER_EXECUTORS, STOP_ONLY_EXECUTORS
 from jobintel.submission.packages import prepare_package, seal_pdf, verify_sealed_pdf
 from jobintel.submission.receipts import sufficient_evidence
 
+# Receipt strategy for a stop-only attempt the human finished: the runner stopped before final Submit
+# and a named human attests that they clicked it and saw the confirmation page.
+HUMAN_SUBMISSION_STRATEGY = "human_attested_after_stop_only_handoff_v1"
+
 
 class ExecutorInterrupted(ValueError):
     """The attempt is outcome_unknown and must not be retried. `failure` is the sanitized,
@@ -202,11 +206,12 @@ class SubmissionService:
                             "claimed_at": self.clock().isoformat(), "lease_until": (self.clock() + timedelta(seconds=lease_seconds)).isoformat()})
         return self._request(request_id)
 
-    def _cv_upload_policy(self, package, mutations, storage_writes, associations=()):
+    def _cv_upload_policy(self, package, mutations, storage_writes, associations=(), parse_writes=()):
         """The approved CV, bound to this application (it must still be the attached CV), this sealed
         package (artifact id + PDF SHA-256) and this request. The file name is derived from the
-        package's legal name; the bytes are only ever the sealed bundle copy."""
-        import re
+        package's legal name, company and role (the review copy's naming); the bytes are only ever
+        the sealed bundle copy."""
+        from jobintel.matching.cv_review_export import ats_upload_filename
         from jobintel.storage.application_store import ApplicationStore
         from jobintel.submission.browserbase_runner import CvUploadPolicy, validate_cv_upload_for
         application = next((a for a in ApplicationStore(self.root).read_applications()
@@ -214,10 +219,10 @@ class SubmissionService:
         if application is None or application.cv_version_id != package.cv_artifact_id:
             raise ValueError("The approved CV is no longer the CV attached to this application")
         name = next((a.value for a in package.answers if a.field == "legal_full_name"), "") or ""
-        stem = re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_")
-        policy = CvUploadPolicy(package.cv_artifact_id, package.cv_pdf_sha256, f"{stem}_CV.pdf" if stem else "CV.pdf",
+        policy = CvUploadPolicy(package.cv_artifact_id, package.cv_pdf_sha256,
+                                ats_upload_filename(name, package.company, package.role),
                                 frozenset(tuple(e) for e in mutations), frozenset(tuple(e) for e in storage_writes),
-                                frozenset(tuple(e) for e in associations))
+                                frozenset(tuple(e) for e in associations), frozenset(tuple(e) for e in parse_writes))
         return validate_cv_upload_for(package.application_url, package.cv_artifact_id, package.cv_pdf_sha256, policy)
 
     def _check_token(self, request, claim_token):
@@ -227,7 +232,8 @@ class SubmissionService:
     def execute(self, request_id, *, claim_token, executor=None, human_handoff=False, review_seconds=1800,
                 allow_live_host=False, live_host=None, live_write_allowlist=(), live_graphql_reads=(),
                 live_graphql_form_writes=(), live_nonfatal_blocked_writes=(), live_cv_upload=False,
-                live_cv_upload_mutations=(), live_cv_storage_writes=(), live_cv_association_mutations=()):
+                live_cv_upload_mutations=(), live_cv_storage_writes=(), live_cv_association_mutations=(),
+                live_cv_parse_writes=(), live_page_security_writes=()):
         """`allow_live_host` + `live_host` (+ optional exact `live_write_allowlist`) run a request
         queued for a real host: once, under mandatory human handoff, recording/logging off. There
         is no final-submit option anywhere on this path.
@@ -248,7 +254,7 @@ class SubmissionService:
             live_mode = bool(allow_live_host or live_host is not None or live_write_allowlist or live_graphql_reads
                              or live_graphql_form_writes or live_nonfatal_blocked_writes or r.get("live_host")
                              or live_cv_upload or live_cv_upload_mutations or live_cv_storage_writes
-                             or live_cv_association_mutations)
+                             or live_cv_association_mutations or live_cv_parse_writes or live_page_security_writes)
             if live_mode:
                 if r["executor"] not in BROWSER_EXECUTORS:
                     raise ValueError("Live-host mode is only available for the browserbase executor or the local_browser executor")
@@ -258,8 +264,11 @@ class SubmissionService:
                     raise ValueError("Live-host execution requires human handoff")
                 if r.get("live_host") != live_host:
                     raise ValueError("Live host does not match the host this request was queued for")
-            if (live_cv_upload_mutations or live_cv_storage_writes or live_cv_association_mutations) and live_cv_upload is not True:
+            if (live_cv_upload_mutations or live_cv_storage_writes or live_cv_association_mutations
+                    or live_cv_parse_writes) and live_cv_upload is not True:
                 raise ValueError("CV upload operations need the explicit CV upload opt-in")
+            if live_page_security_writes and r["executor"] != "local_browser":
+                raise ValueError("Page-security entries are only available for a local_browser live-host run")
             if live_cv_upload is not False and (live_cv_upload is not True or r["executor"] != "local_browser"):
                 raise ValueError("An approved CV upload is only available for a local_browser live-host run")
             if r["status"] != "executing" or r.get("handoff_started"):
@@ -280,7 +289,8 @@ class SubmissionService:
                 from jobintel.submission.browserbase import BrowserbaseBundleAuthorization
                 from jobintel.submission.browserbase_service import (BrowserbaseServiceExecutor, LiveHostAuthorization,
                                                                      validate_live_host, validate_live_write_allowlist)
-                from jobintel.submission.browserbase_runner import validate_nonfatal_blocked_writes
+                from jobintel.submission.browserbase_runner import (validate_nonfatal_blocked_writes,
+                                                                    validate_page_security_writes)
                 from jobintel.submission.graphql_policy import validate_form_writes, validate_reads
                 a = self.store.approvals()[r["approval_id"]]
                 transport, config = self._browserbase_runtime(r["executor"])
@@ -299,8 +309,10 @@ class SubmissionService:
                         tuple(sorted(validate_nonfatal_blocked_writes(package.application_url,
                                                                       live_nonfatal_blocked_writes))),
                         self._cv_upload_policy(package, live_cv_upload_mutations, live_cv_storage_writes,
-                                               live_cv_association_mutations)
-                        if live_cv_upload else None)
+                                               live_cv_association_mutations, live_cv_parse_writes)
+                        if live_cv_upload else None,
+                        tuple(sorted(validate_page_security_writes(package.application_url,
+                                                                   live_page_security_writes))))
                 executor = BrowserbaseServiceExecutor(self.root / "submissions" / r["executor"], transport=transport,
                     config=config, clock=self.clock, live=live, name=r["executor"],
                     authorization=BrowserbaseBundleAuthorization(a["id"], request_id, a["package_hash"],
@@ -320,6 +332,8 @@ class SubmissionService:
                         "graphql_read_allowlist_count": len(live.graphql_reads),
                         "graphql_form_write_allowlist_count": len(live.graphql_form_writes),
                         "nonfatal_blocked_write_count": len(live.nonfatal_blocked_writes),
+                        **({"page_security_writes": [list(e) for e in live.page_security_writes],
+                            "captcha_automation": "never"} if live.page_security_writes else {}),
                         **({"cv_upload_authorized": True, "cv_artifact_id": live.cv_upload.artifact_id,
                             "cv_pdf_sha256": live.cv_upload.sha256,
                             "cv_upload_mutation_count": len(live.cv_upload.graphql_mutations),
@@ -387,6 +401,8 @@ class SubmissionService:
                                              "identity_state")}
         if "page_guard_released" in evidence:  # local browser only
             kept["page_guard_released"] = evidence["page_guard_released"]
+        if evidence.get("target_id"):  # shared local browser: this request's own tab binding
+            kept["target_id"], kept["shared_browser_id"] = evidence["target_id"], evidence.get("shared_browser_id", "")
         if getattr(executor, "live", None) is not None:
             # Minimal live diagnostics only: privacy mode, stop reason, blocked method/host/path/type.
             live = evidence.get("live") or {}
@@ -523,6 +539,7 @@ class SubmissionService:
         return {"request_id": request_id, "session_id": session_id, **result,
                 "request_status": self._request(request_id)["status"]}
 
+    HUMAN_SUBMISSION_STRATEGY = HUMAN_SUBMISSION_STRATEGY
     CLOSABLE_STATUSES = frozenset({"needs_human_input", "ready_for_human_review", "outcome_unknown"})
 
     def close_not_submitted(self, request_id, *, reviewer, confirmed_not_submitted, reason):
@@ -586,6 +603,71 @@ class SubmissionService:
             self.store.append("closed_not_submitted", request_id, data, event_id="closed-not-submitted:" + request_id,
                               at=data["closed_at"])
             return data
+
+    def record_human_submission(self, request_id, *, reviewer, confirmed_submitted, submitted_cv, confirmation_text):
+        """A named human confirms that THEY clicked final Submit after a stop-only handoff (the runner
+        never does). Records a human-attested receipt for exactly the approved package and CV;
+        `reconcile` then marks the application APPLIED. The confirmation is the authority: it is never
+        inferred from page state. Refused when the runner reported a final-submit click, the request was
+        closed as not submitted, a receipt already exists, the browser session is still unaccounted, or
+        `submitted_cv` is not the package's sealed CV. Repeating the identical confirmation returns the
+        existing receipt; anything else fails."""
+        import hashlib
+        if confirmed_submitted is not True:
+            raise ValueError("Recording a human submission requires the explicit --confirmed-submitted confirmation")
+        if not isinstance(reviewer, str) or not reviewer.strip():
+            raise ValueError("Recording a human submission requires a named reviewer")
+        if not isinstance(confirmation_text, str) or not confirmation_text.strip() or len(confirmation_text) > 2000:
+            raise ValueError("The confirmation text the page showed is required (at most 2000 characters)")
+        reviewer, confirmation_text = reviewer.strip(), " ".join(confirmation_text.split())
+        receipt_id = "receipt:" + request_id
+        with store_lock(self.root):
+            r = self._request(request_id)
+            existing = next((e for e in self.store.receipts() if e["event_id"] == receipt_id), None)
+            if existing is not None:
+                data = existing["data"]
+                if (data.get("verified_by"), data.get("verification_strategy"), data.get("cv_artifact_id"),
+                        (data.get("evidence") or [{}])[0].get("value")) != (
+                        reviewer, HUMAN_SUBMISSION_STRATEGY, submitted_cv, confirmation_text):
+                    raise ValueError("A different receipt already exists for this request")
+                return data
+            if r["executor"] not in STOP_ONLY_EXECUTORS:
+                raise ValueError("Only a stop-only executor request can be completed by a human submission")
+            if r["status"] not in self.CLOSABLE_STATUSES:
+                raise ValueError(f"A request in status {r['status']} cannot record a human submission")
+            events = [e for e in self.store.events() if e["entity_id"] == request_id]
+            if any(e["kind"] == "closed_not_submitted" for e in events):
+                raise ValueError("Request was closed by a human as not submitted")
+            for e in events:
+                if e["kind"] in {"browserbase_result", "airtap_result"} and e["data"].get("final_submit_clicked") is not False:
+                    raise ValueError("The runner reported a final-submit click; investigate, do not record")
+            approval = self.store.approvals().get(r["approval_id"])
+            package = ApprovedSubmissionPackage.from_dict(approval["package"]) if approval else None
+            if package is None or package.package_hash != r["package_hash"]:
+                raise ValueError("The request's approved package is missing or does not match")
+            if submitted_cv != package.cv_artifact_id:
+                raise ValueError(f"Submitted CV must be exactly the package's sealed CV {package.cv_artifact_id}")
+            if r["executor"] in BROWSER_EXECUTORS:
+                ev = self._handoff_events(request_id)
+                session = (ev["session"] or {}).get("session_id")
+                released = ev["released"] is not None or (ev["evidence"] is not None and ev["evidence"].get("released") is True
+                                                          and ev["handoff"] is None)
+                if session and not released:
+                    raise ValueError("The browser session is active or unaccounted; release it before recording")
+            now = self.clock().isoformat()
+            receipt = {"receipt_id": receipt_id, "request_id": request_id, "approval_id": r["approval_id"],
+                       "application_id": package.application_id, "job_id": package.job_id,
+                       "package_hash": package.package_hash, "cv_artifact_id": package.cv_artifact_id,
+                       "cv_pdf_sha256": package.cv_pdf_sha256, "application_url": package.application_url,
+                       "executor": r["executor"], "submitted": True, "submitted_at": now,
+                       "submitted_at_source": "human_attestation_time", "final_submit_clicked_by": "human",
+                       "evidence": [{"kind": "manual_verified", "value": confirmation_text,
+                                     "sha256": hashlib.sha256(confirmation_text.encode()).hexdigest(),
+                                     "detail": "confirmation page text as reported by the human reviewer"}],
+                       "previous_status": r["status"], "verified_by": reviewer, "verified_at": now,
+                       "verification_strategy": HUMAN_SUBMISSION_STRATEGY}
+            self.store.append("receipt_verified", receipt_id, receipt, event_id=receipt_id, receipt=True, at=now)
+            return receipt
 
     def _refuse_if_closed(self, request):
         if request["status"] == "closed_not_submitted":

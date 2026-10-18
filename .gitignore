@@ -41,3 +41,26 @@ tests/test_internship_evidence_budget.py
 tests/test_promotion_non_destructive.py
 # One-off operator helpers bound to real request/session ids.
 scratchpad/
+
+# Candidate-specific per-job choices and private Evidence Bank integration checks.
+config/cv_positioning_overrides.json
+tests/test_curated_evidence_paths.py
+
+# Generated application documents and local stores must never enter a release.
+*.pdf
+*.docx
+*.doc
+*.bak
+*.backup
+cover_letters/
+cv_artifacts/
+sealed_packages/
+package_store/
+browser_profiles/
+backups/
+
+# Local credentials and key material.
+*.pem
+*.key
+credentials.json
+secrets.json

@@ -23,6 +23,7 @@ from jobintel.matching.cv_document import (
     select_base_cv,
 )
 from jobintel.matching.cv_render import LAYOUT_PRESETS, RenderResult, render_cv_document
+from jobintel.matching.cv_title import CVTitle, cv_title
 from jobintel.matching.project_selection import (
     TRANSFERABLE_DIMENSIONS,
     ProjectMatch,
@@ -33,12 +34,13 @@ from jobintel.analysis.eligibility import IneligibleJobError, evaluate_job_eligi
 from jobintel.matching import impact_writing
 from jobintel.matching.claim_grounding import extract_tech_entities, validate_bullet_claim
 from jobintel.matching.review_gate import evaluate_review_gate
+from jobintel.matching import cv_editorial, jd_lexicon
 from jobintel.matching.tailoring_skill import classify_role_archetype
 from jobintel.models.candidate import CandidateProfile, CapabilityEvidence
 from jobintel.models.cv_artifact import GeneratedCVArtifact, ProjectBullet
 from jobintel.models.eligibility import EligibilityState
 from jobintel.models.job import Job
-from jobintel.models.taxonomy import EvidenceSourceType
+from jobintel.models.taxonomy import EvidenceSourceType, SkillCategory
 from jobintel.storage.cv_artifact_store import CVArtifactStore
 
 # A tailored CV keeps the candidate's full core structure (header, summary,
@@ -59,30 +61,47 @@ from jobintel.storage.cv_artifact_store import CVArtifactStore
 # every degree keeps its supporting detail line (a long module list may be cut
 # to a concise JD-relevant subset of whole module names, never removed).
 #
+# Weighted project bullet budget (2026-10-13): the page visibly prioritises the strongest
+# JD-matched project instead of spreading bullets evenly. By JD relevance + evidence strength:
+#   rank 1  -> "focus" (primary / heavyweight): up to 5 bullets, protected down to 4;
+#   rank 2  -> "secondary" (strong secondary):  up to 3 bullets, protected at 3 until late;
+#   rank 3+ -> "supporting":                    up to 2 bullets, trimmed first.
+# Ceilings are never quotas: only distinct evidence becomes a bullet.
+#
 # Overflow is solved in this order:
 #   1. drop repetitive project bullets,
-#   2. drop internship bullets above the 1-bullet floor (least JD-relevant first),
-#   3. cut long module lists to a concise subset (CONCISE_MODULES),
-#   4. drop low-value skills (never JD-named ones, never below MIN_SKILLS),
-#   5. step to a denser professional layout preset (normal -> dense -> compact),
-#   6. drop the weakest secondary-project bullets,
-#   7. drop the weakest secondary project (down to MIN_PROJECTS),
-#   then, only if still needed: thin focus projects down to FOCUS_BULLET_FLOOR,
-#   shorten a bullet to one complete sentence, cut module lists to
-#   MIN_MODULES, and finally go below the focus floor.
-# Underfill is then solved by restoring supported content while it still fits:
-# focus bullets, secondary bullets, a dropped project, full module lists,
-# JD-relevant internship bullets, then remaining evidence-backed skills.
-# Page count and utilisation are measured on the REAL rendered PDF.
+#   2. cut long module lists to a concise subset (CONCISE_MODULES),
+#   3. drop low-value skills (never JD-named ones, never below MIN_SKILLS),
+#   4. trim supporting-project bullets (down to 1),
+#   5. tighten the layout at the full body size (normal -> dense -> tight -> slim: margins, sides first),
+#   6. drop internship bullets above the 2-bullet floor (least JD-relevant first),
+#   7. thin the primary project from 5 to 4 bullets,
+#   8. drop the weakest supporting project (down to MIN_PROJECTS),
+#   9. step to a smaller body size (compact -> narrow),
+#   10. thin the strong secondary project from 3 to 2 bullets,
+#   then, only if still needed: internship bullets down to 1 per role, drop the secondary
+#   project, shorten a bullet to one complete sentence, cut module lists to MIN_MODULES,
+#   and finally go below the tier floors.
+# Underfill is then solved by restoring supported content while it still fits, tier by
+# tier (primary, secondary, supporting bullets), a dropped project, full module lists,
+# JD-relevant internship bullets, then remaining evidence-backed skills. A lower tier never
+# holds more bullets than a higher one. Page count and utilisation are measured on the
+# REAL rendered PDF.
 MIN_PROJECTS = 2
-MAX_FOCUS_PROJECTS = 2
-MAX_FOCUS_BULLETS = 4
+MAX_FOCUS_BULLETS = 4  # 2026-10-15 editorial layer: primary 3-4, secondary 2-3, supporting 1-2 (ceilings)
+FOCUS_BULLET_FLOOR = 3
 MAX_SECONDARY_BULLETS = 3
+SECONDARY_BULLET_FLOOR = 2
+MAX_SUPPORTING_BULLETS = 2
 MAX_BULLETS_PER_PROJECT = MAX_FOCUS_BULLETS
-FOCUS_BULLET_FLOOR = 2
-# A project is "focus" when its evidence strength is at least this share of
-# the strongest selected project's.
-FOCUS_STRENGTH_RATIO = 0.75
+# Candidates per project handed to the editorial pass (cv_editorial), which keeps the distinct, role-relevant ones.
+EDITORIAL_CANDIDATES = 12
+# Tier order: a lower rank gets page space first and is trimmed last.
+TIER_RANK = {"focus": 0, "secondary": 1, "supporting": 2}
+TIER_CEILING = {"focus": MAX_FOCUS_BULLETS, "secondary": MAX_SECONDARY_BULLETS, "supporting": MAX_SUPPORTING_BULLETS}
+# Projects whose JD-relevance score is at least this share of the best are near-tied: among them
+# the one with the most distinct grounded bullets leads (the primary carries the deepest detail).
+NEAR_TIE_RATIO = 0.9
 # Internship bullets per role on the full (pre-fit) document: the most
 # JD-relevant, non-overlapping variants from the role's evidence pool. The page
 # fitter then keeps 2-4 per role depending on space (1 only under heavy pressure).
@@ -115,6 +134,9 @@ GENERIC_EXPERIENCE_FACTOR = 0.5
 # Beyond the first two bullets of a role, a variant must score at least this
 # share of the role's best variant to earn space (2-4 bullets by relevance).
 EXTRA_INTERNSHIP_MIN_SHARE = 0.5
+# Per policy `experience_signals` phrase the role archetype prefers (a selection preference among
+# supported statements, below literal JD terms; never a rewording).
+ARCHETYPE_SIGNAL_WEIGHT = 0.75
 # A quote repeating at least this share of a stronger quote's content is not a
 # distinct bullet and is never included; smaller overlaps only down-weight it.
 REPETITIVE_OVERLAP = 0.35
@@ -235,6 +257,18 @@ def generate_cv(
             job, candidate, hybrid_result=hybrid_result, max_projects=max_projects
         )
 
+    selected_matches, project_explanations = apply_positioning_override(
+        job, candidate, selected_matches, project_explanations, store_root)
+
+    from jobintel.matching.project_selection import archetype_category_weights
+    category_weights = archetype_category_weights(job)
+    theme = cv_editorial.theme_for(job.description, job.title)
+    # JD lexical keyword / phrase extraction and the candidate's evidence view (matching.jd_lexicon).
+    jd_terms = jd_lexicon.extract_terms(job.description, job.title)
+    lexical_view = jd_lexicon.evidence_view(candidate)
+    approvals = jd_lexicon.load_approvals(store_root)
+    jd_keys = {term.key for term in jd_lexicon.important_terms(jd_terms)}
+
     # 2. Gather candidate project evidence
     project_evidence: dict[str, list[CapabilityEvidence]] = {}
     for match in selected_matches:
@@ -292,7 +326,7 @@ def generate_cv(
                     )
                 )
         else:
-            bullets = _compose_bullets_for_project(match, candidate, jd, impact)
+            bullets = _compose_bullets_for_project(match, candidate, jd, impact, category_weights)
             if accepted_rewrites:
                 any_fallback = True
 
@@ -316,21 +350,74 @@ def generate_cv(
 
     # 5. Assemble the full structured document (stable core sections + tailored content)
     categories = {capability.name.casefold(): capability.category for capability in candidate.capabilities.values()}
-    core_skills = [name for index, (name, priority) in enumerate(ranked_skills) if priority >= 1.5 or (priority > 0 and index < MAX_CORE_SKILLS)]
-    extra_skills = [name for name, _ in ranked_skills if name not in core_skills]
-    protected_skills = {name.casefold() for name, priority in ranked_skills if priority >= 2}
+    # 5a. Final editorial / compression pass (cv_editorial): JD-signal project order, tiers, one bullet per
+    # capability slice, inventory removed, projects differentiated -- before page fitting.
+    evidence_by_id = _evidence_by_id(candidate)
+    jd_named = {name.casefold() for name, priority in ranked_skills if priority >= 2}
+    projects, editorial = cv_editorial.edit_projects(projects, theme, evidence_by_id, jd_named)
+    # 5a'. JD lexical alignment of the kept project bullets: the employer's own wording where the bullet's own
+    # source evidence supports it (never a new claim).
+    lexical_actions = _align_project_bullets(projects, jd_keys, lexical_view)
     _mark_cross_project_redundancy(projects)
-    projects = _assign_emphasis(projects)
     if impact is not None:
         _vary_verbs(projects, impact)
-    document = _assemble_document(candidate, jd, projects, group_skills(core_skills, categories), job.description, impact)
+    # 5b. Skills: only those the JD names, or that the page's own evidence carries within the role family's
+    # skill kinds; at most four groups.
+    # Evidence of the SELECTED projects (any of their grounded capabilities), not only the final bullets.
+    selected_ids = {project.project_id for project in projects}
+    on_page = {capability.name.casefold() for capability in candidate.capabilities.values()
+               if capability.evidence_tier != "missing"
+               and any(evidence.project_id in selected_ids for evidence in capability.evidence)}
+    on_bullets = {name.casefold() for project in projects for bullet in project.bullets for name in bullet.capability_names}
+    on_bullets |= {name.casefold() for project in projects for name in project.technologies}
+    allowed_skills = [name for name, _ in ranked_skills
+                      if cv_editorial.keep_skill(name, categories.get(name.casefold(), "tooling"), theme, jd_named,
+                                                 on_page, on_bullets)]
+    # Skill status: JD-named umbrella terms implied by grounded skills (NoSQL, Git) and USER_APPROVED_REFRESH
+    # skills the JD names join Technical Skills (Skills only -- never a bullet), right after the JD-named ones.
+    refresh = jd_lexicon.refresh_skills(jd_terms, approvals, lexical_view)
+    # A JD must-have the review gate counts (e.g. "We work mostly in Java, Go ...") is materially valued
+    # even below the lexical importance weight: an approved refresh skill for it joins Skills too
+    # (user's JD-alignment policy, 2026-10-17). Still Skills-only and learning-backlogged.
+    must_have = {name.casefold() for name in jd.must_have_skills}
+    refresh += [t for t in jd_terms if t.category == jd_lexicon.HARD and t.key in approvals and t.key in must_have
+                and t.key not in lexical_view.capabilities and t not in refresh]
+    added =[*jd_lexicon.implied_skills(jd_terms, lexical_view), *(t.display for t in refresh)]
+    added = [name for name in added if name.casefold() not in {s.casefold() for s in allowed_skills}]
+    for name in added:
+        categories.setdefault(name.casefold(), _LEXICAL_SKILL_CATEGORY.get(name.casefold(), SkillCategory.TOOLING))
+    lead = [name for name in allowed_skills if name.casefold() in jd_named]
+    allowed_skills = [*lead, *added, *(name for name in allowed_skills if name not in lead)]
+    core_skills = allowed_skills[:MAX_CORE_SKILLS]
+    extra_skills = [name for name in allowed_skills if name not in core_skills]
+    protected_skills = jd_named | {name.casefold() for name in added}
+    document, title = _assemble_document(candidate, jd, projects, cv_editorial.group_skills(core_skills, categories, theme),
+                                         job.description, impact, job_title=job.title, theme=theme,
+                                         evidence_by_id=evidence_by_id)
+    lexical_actions += _align_experience(document, jd_keys, lexical_view, impact)
 
     artifact_id = f"cv-{uuid.uuid4().hex[:12]}"
     pdf_path = Path(store_root) / DEFAULT_PDF_DIR / f"{artifact_id}.pdf"
 
-    fitter = _PageFitter(pdf_path, document, jd, job.description, [name for name, _ in ranked_skills], extra_skills, protected_skills, categories)
+    fitter = _PageFitter(pdf_path, document, jd, job.description, allowed_skills, extra_skills, protected_skills, categories,
+                         archetype_signals=_archetype_signals(impact), theme=theme)
     document, render_result = fitter.fit()
+    # The summary may cite only evidence that survived page fitting: recompose it from the FINAL page.
+    if impact is not None:
+        final_summary = _compose_final_summary(document, job, impact, candidate, theme, evidence_by_id)
+        if final_summary and final_summary != document.summary:
+            document.summary = final_summary
+            fitter.doc = document
+            render_result = fitter._reduce()
+            document = fitter.doc
+            fitter.actions.append("editorial: summary recomposed from the final fitted page")
+    fitter.actions.extend([*lexical_actions, f"editorial: theme {editorial.theme}; order {', '.join(editorial.order)}",
+                           *(f"editorial: removed {item}" for item in editorial.removed),
+                           *(f"editorial: compressed {item}" for item in editorial.compressed)])
     cv_text = document_to_text(document)
+    summary_reasons = [f"Summary names a project no longer on the page: {name}" for name in
+                       {p.name for p in projects} - {p.name for p in document.projects}
+                       if document.summary and name in document.summary]
 
     included_bullets = [bullet for project in document.projects for bullet in project.bullets]
     experience_statements = {
@@ -351,7 +438,13 @@ def generate_cv(
     included_skills = {name.casefold() for name in document.skills()}
     skills = [name for name, _ in ranked_skills if name.casefold() in included_skills]
 
-    matched_required, missing_required, partial_required = _match_required_skills(candidate, jd)
+    matched_required, missing_required, partial_required = _match_required_skills(candidate, jd, lexical_view)
+    # A USER_APPROVED_REFRESH skill on the page is tracked (coverage report + learning backlog), not a gap
+    # that forces review on its own.
+    refresh_names = {t.display.casefold() for t in refresh}
+    missing_required = [name for name in missing_required if name.casefold() not in refresh_names]
+    ats_coverage = jd_lexicon.coverage_report(jd_terms, lexical_view, approvals, document)
+    backlog = jd_lexicon.learning_backlog([t for t in refresh if t.display in document.skills()], job, approvals)
     missing_required_contact = _missing_contact_fields(candidate)
     writing_quality: dict = {}
     writing_reasons: list[str] = []
@@ -369,7 +462,7 @@ def generate_cv(
         page_utilization=render_result.page_utilization,
         min_page_utilization=MIN_PAGE_UTILIZATION,
         github_freshness_state=github_freshness_state,
-        writing_review_reasons=writing_reasons,
+        writing_review_reasons=writing_reasons + summary_reasons,
     )
 
     return GeneratedCVArtifact(
@@ -399,10 +492,11 @@ def generate_cv(
         page_count=render_result.page_count,
         fits_one_page=render_result.page_count <= 1,
         render_margin_mm=render_result.margin_mm,
+        render_side_margin_mm=render_result.side_margin_mm,
         render_body_pt=render_result.body_pt,
         page_utilization=render_result.page_utilization,
         document=document_to_dict(document),
-        fit_actions=fitter.actions,
+        fit_actions=[title.action(), *fitter.actions],
         document_format=CV_DOCUMENT_FORMAT,
         layout_preset=render_result.layout_preset,
         github_freshness_state=github_freshness_state,
@@ -415,6 +509,8 @@ def generate_cv(
         rejected_bullet_suggestions=rejected_suggestions,
         writing_policy=impact.policy.id if impact is not None else "",
         writing_quality=writing_quality,
+        ats_coverage=ats_coverage,
+        learning_backlog=backlog,
     )
 
 
@@ -489,13 +585,16 @@ def generate_and_save_cv(
         writing_policy=writing_policy,
     )
     cv_store.save(artifact)
+    if artifact.learning_backlog:  # a saved CV listing a refresh skill always has its learning backlog
+        jd_lexicon.persist_backlog(store_root, artifact.learning_backlog)
     return artifact
 
 
 # --- Bullet composition (JD-aware, evidence-grounded, extractive only) ---
 
 
-def _collect_scored_quotes(match: ProjectMatch, candidate: CandidateProfile, jd: JDRequirements) -> list[_ScoredQuote]:
+def _collect_scored_quotes(match: ProjectMatch, candidate: CandidateProfile, jd: JDRequirements,
+                           category_weights: dict | None = None) -> list[_ScoredQuote]:
     project = match.project
     matched_lower = {name.casefold() for name in match.matched_requirements}
     must_have = {name.casefold() for name in jd.must_have_skills}
@@ -526,7 +625,8 @@ def _collect_scored_quotes(match: ProjectMatch, candidate: CandidateProfile, jd:
             if not text:
                 continue
             key = text.casefold()
-            contribution = priority * evidence.confidence + _jd_term_overlap(text, jd)
+            contribution = (priority * evidence.confidence + _jd_term_overlap(text, jd)
+                            + (category_weights or {}).get(evidence.category or "", 0.0))
             if key in quotes_by_text:
                 existing = quotes_by_text[key]
                 existing.capability_names.add(capability.name)
@@ -550,15 +650,19 @@ def _jd_term_overlap(text: str, jd: JDRequirements) -> float:
 
 
 def _compose_bullets_for_project(match: ProjectMatch, candidate: CandidateProfile, jd: JDRequirements,
-                                 impact: _ImpactContext | None = None) -> list[_BulletCandidate]:
+                                 impact: _ImpactContext | None = None, category_weights: dict | None = None) -> list[_BulletCandidate]:
     """One complete evidence quote per bullet -- never sliced, never stitched
     together with another quote. A quote that largely repeats a stronger one is
     down-weighted so it is the first to go (or never gets space). With an impact
     context every candidate then passes Impact & Ownership composition BEFORE the
     per-project ceiling, so the archetype's foregrounded value decides what gets space."""
     bullets: list[_BulletCandidate] = []
-    for quote in _collect_scored_quotes(match, candidate, jd):
-        redundancy = max((_content_overlap(quote.text, kept.text) for kept in bullets), default=0.0)
+    for quote in _collect_scored_quotes(match, candidate, jd, category_weights):
+        # Only like is compared with like here: a curated narrative is never discarded as a repeat of a
+        # code-derived template statement (or vice versa) -- the editorial pass chooses between them.
+        derived = any(":capmap:" in evidence_id for evidence_id in quote.evidence_ids)
+        redundancy = max((_content_overlap(quote.text, kept.text) for kept in bullets
+                          if any(":capmap:" in e for e in kept.evidence_ids) == derived), default=0.0)
         if redundancy >= REPETITIVE_OVERLAP:
             continue
         bullets.append(
@@ -574,7 +678,7 @@ def _compose_bullets_for_project(match: ProjectMatch, candidate: CandidateProfil
     if impact is not None:
         bullets = _apply_impact(bullets, match.project, candidate, impact)
     bullets.sort(key=lambda bullet: -bullet.weight)
-    return bullets[:MAX_BULLETS_PER_PROJECT]
+    return bullets[:EDITORIAL_CANDIDATES]
 
 
 def _vary_verbs(projects: list[ProjectBlock], impact: _ImpactContext) -> None:
@@ -676,19 +780,23 @@ def _project_strength(project: ProjectBlock) -> tuple[float, float]:
 
 
 def _assign_emphasis(projects: list[ProjectBlock]) -> list[ProjectBlock]:
-    """Split selected projects into focus/secondary, apply the per-tier bullet
-    ceilings, and order focus projects first so page space follows evidence
-    priority."""
+    """Weighted bullet budget: the strongest project (JD relevance, then evidence strength) is the
+    primary "focus" project, the next is the strong "secondary" one, the rest are "supporting".
+    Applies each tier's bullet ceiling and orders the page primary first."""
     if not projects:
         return projects
-    ranked = sorted(projects, key=lambda project: tuple(-value for value in _project_strength(project)))
-    best = _project_strength(ranked[0])[0]
-    focus_ids = {project.project_id for project in ranked[:MAX_FOCUS_PROJECTS] if project.selection_score >= best * FOCUS_STRENGTH_RATIO}
-    for project in projects:
-        project.emphasis = "focus" if project.project_id in focus_ids else "secondary"
-        ceiling = MAX_FOCUS_BULLETS if project.emphasis == "focus" else MAX_SECONDARY_BULLETS
-        project.bullets = sorted(project.bullets, key=lambda bullet: -bullet.weight)[:ceiling]
-    return [project for project in projects if project.emphasis == "focus"] + [project for project in projects if project.emphasis == "secondary"]
+    best = max(project.selection_score for project in projects)
+
+    def order(project):
+        near = best > 0 and project.selection_score >= best * NEAR_TIE_RATIO
+        depth = min(len(project.bullets), MAX_FOCUS_BULLETS) if near else 0
+        return (not near, -depth, *(-value for value in _project_strength(project)))
+
+    ranked = sorted(projects, key=order)
+    for rank, project in enumerate(ranked):
+        project.emphasis = "focus" if rank == 0 else "secondary" if rank == 1 else "supporting"
+        project.bullets = sorted(project.bullets, key=lambda bullet: -bullet.weight)[:TIER_CEILING[project.emphasis]]
+    return ranked
 
 
 def _project_technologies(candidate: CandidateProfile, project_id: str, skill_rank: dict[str, int]) -> list[str]:
@@ -778,19 +886,62 @@ def _rank_skills(
     return [(name, priority) for priority, _, _, _, name in scored]
 
 
-def _match_required_skills(candidate: CandidateProfile, jd: JDRequirements) -> tuple[list[str], list[str], list[str]]:
-    matched: list[str] = []
-    missing: list[str] = []
-    partial: list[str] = []
-    for name in jd.must_have_skills:
+def positioning_override(job_id: str, store_root) -> dict | None:
+    """A reviewed, per-job editorial positioning rule from config/cv_positioning_overrides.json (repo config
+    next to the local store), or None. Keyed by exact job id only; never inferred."""
+    import json as _json
+    try:
+        path = Path(store_root).resolve().parents[1] / "config" / "cv_positioning_overrides.json"
+        rules = _json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, IndexError):
+        return None
+    rule = rules.get(job_id) if isinstance(rules, dict) else None
+    return rule if isinstance(rule, dict) else None
+
+
+def apply_positioning_override(job, candidate, matches, explanations, store_root):
+    """Narrow editorial correction (user-reviewed, per job): drop `avoid_projects`, bring in `prefer_projects`
+    from the candidate's OWN projects at `prefer_position`, keeping the same number of projects. Bullets are
+    still built only from each project's grounded evidence; nothing is invented."""
+    rule = positioning_override(job.id, store_root)
+    if not rule:
+        return matches, explanations
+    from dataclasses import replace as _replace
+    avoid = set(rule.get("avoid_projects", []))
+    kept = [m for m in matches if m.project.id not in avoid]
+    by_id = {p.id: p for p in candidate.projects}
+    position = int(rule.get("prefer_position", 1))
+    reason = rule.get("reason", "reviewed editorial positioning")
+    explanations = {k: v for k, v in explanations.items() if k not in avoid}
+    for project_id in rule.get("prefer_projects", []):
+        if project_id in by_id and all(m.project.id != project_id for m in kept):
+            match = ProjectMatch(project=by_id[project_id], score=max((m.score for m in kept), default=1.0),
+                                 matched_requirements=[], missing_requirements=[],
+                                 explanation=f"Editorial positioning override (reviewed): {reason}",
+                                 selection_basis="transferable")
+            kept.insert(min(position, len(kept)), match)
+            explanations[project_id] = match.explanation
+            position += 1
+    kept = kept[:max(len(matches), 1)]
+    return kept, {k: v for k, v in explanations.items() if any(m.project.id == k for m in kept)}
+
+
+def _match_required_skills(candidate: CandidateProfile, jd: JDRequirements,
+                           lexical_view=None) -> tuple[list[str], list[str], list[str]]:
+    """Review-gate view of the JD's required skills: individually mandatory ones count on their own; an
+    alternatives group ("one or more of", "such as") counts once (analysis.jd_requirements). A skill implied
+    by grounded evidence (jd_lexicon GROUNDED_SYNONYM: Git by the candidate's own repositories) is matched."""
+    from jobintel.analysis.jd_requirements import resolve_required_skills
+
+    def tier(name):
         capability = candidate.capabilities.get(name.casefold())
-        if capability is None or capability.evidence_tier == "missing":
-            missing.append(name)
-            continue
-        matched.append(name)
-        if capability.evidence_tier == "partial":
-            partial.append(name)
-    return matched, missing, partial
+        if capability is not None and capability.evidence_tier != "missing":
+            return capability.evidence_tier
+        if lexical_view is not None and jd_lexicon.implied_grounding(name, lexical_view):
+            return "implied"
+        return None
+
+    return resolve_required_skills(jd, tier)
 
 
 def _missing_contact_fields(candidate: CandidateProfile) -> list[str]:
@@ -813,7 +964,7 @@ def _education_entries(candidate: CandidateProfile) -> list[DatedEntry]:
 
 
 def _jd_dimensions(jd_text: str) -> list[str]:
-    return [pattern for pattern, _ in TRANSFERABLE_DIMENSIONS.values() if re.search(pattern, (jd_text or "").casefold())]
+    return [pattern for pattern, *_ in TRANSFERABLE_DIMENSIONS.values() if re.search(pattern, (jd_text or "").casefold())]
 
 
 def _experience_relevance(text: str, jd: JDRequirements, jd_dimensions: list[str], jd_topics: list[re.Pattern] = ()) -> float:
@@ -836,7 +987,25 @@ def _jd_topics(jd_text: str) -> list[re.Pattern]:
     return [pattern for pattern in _EXPERIENCE_TOPICS if pattern.search(lowered)]
 
 
-def _select_experience_statements(statements, jd: JDRequirements | None, jd_text: str) -> list:
+def _archetype_preference(text: str, archetype_signals: list[re.Pattern]) -> float:
+    """Ordering bonus for the wording this role archetype prefers (e.g. collaboration /
+    investigation for a forward-deployed role, SQL / validation for backend). It only reorders
+    supported statements of real relevance: never makes an irrelevant one relevant and never
+    moves the relevance cut-offs."""
+    lowered = text.casefold()
+    return ARCHETYPE_SIGNAL_WEIGHT * sum(1 for pattern in archetype_signals if pattern.search(lowered))
+
+
+def _archetype_signals(impact: _ImpactContext | None) -> list[re.Pattern]:
+    """The impact archetype's preferred internship wording (policy `experience_signals`)."""
+    if impact is None:
+        return []
+    spec = impact.policy.spec["archetypes"].get(impact.archetype, {})
+    return [re.compile(pattern) for pattern in spec.get("experience_signals", ())]
+
+
+def _select_experience_statements(statements, jd: JDRequirements | None, jd_text: str,
+                                  archetype_signals: list[re.Pattern] = ()) -> list:
     """Per JD: the role's evidence pool ranked by relevance (ties keep the
     authored order), skipping any variant that restates a master unit an
     already-chosen bullet covers, up to MAX_INTERNSHIP_DETAIL."""
@@ -844,14 +1013,18 @@ def _select_experience_statements(statements, jd: JDRequirements | None, jd_text
         return list(statements)[:MAX_INTERNSHIP_DETAIL]
     dimensions, topics = _jd_dimensions(jd_text), _jd_topics(jd_text)
     scores = {statement.id: _experience_relevance(statement.text, jd, dimensions, topics) for statement in statements}
-    ranked = sorted(statements, key=lambda statement: -scores[statement.id])
-    best = scores[ranked[0].id] if ranked else 0.0
+    order = {statement.id: scores[statement.id] + (_archetype_preference(statement.text, archetype_signals)
+                                                   if scores[statement.id] > 0 else 0.0) for statement in statements}
+    ranked = sorted(statements, key=lambda statement: -order[statement.id])
+    best = max(scores.values(), default=0.0)
     chosen, covered = [], set()
     for statement in ranked:
         units = set(statement.grounded_in) or {statement.id}
         if units & covered:
             continue
-        if len(chosen) >= 2 and scores[statement.id] < EXTRA_INTERNSHIP_MIN_SHARE * best:
+        # The cut-off is relative to the best plain relevance, so a preference can lift a relevant
+        # statement over it but never raises the bar for the others.
+        if len(chosen) >= 2 and order[statement.id] < EXTRA_INTERNSHIP_MIN_SHARE * best:
             break
         chosen.append(statement)
         covered |= units
@@ -860,15 +1033,26 @@ def _select_experience_statements(statements, jd: JDRequirements | None, jd_text
     return chosen
 
 
+# JD wording that makes a theme-gated role (e.g. a current web / e-commerce internship) relevant even on a CV
+# whose overall theme is systems, platform or ML.
+_GATED_ROLE_WORK = re.compile(r"\b(?:web(?:site|sites)?|front[- ]?end|full[- ]?stack|e-?commerce|shopify|product engineer\w*)\b", re.I)
+
+
 def _experience_entries(candidate: CandidateProfile, jd: JDRequirements | None = None, jd_text: str = "",
                         impact: _ImpactContext | None = None) -> list[DatedEntry]:
     entries = []
+    theme = cv_editorial.theme_for(jd_text) if jd_text else None
     for item in candidate.experience:
+        # A role with cv_themes (curated policy) is shown only for those CV themes or when the JD names its
+        # kind of work; it is never forced onto an unrelated CV.
+        if getattr(item, "cv_themes", ()) and theme is not None and theme not in item.cv_themes \
+                and not _GATED_ROLE_WORK.search(jd_text):
+            continue
         dates = ""
         if item.start_date:
             dates = f"{item.start_date:%b %Y} – {item.end_date:%b %Y}" if item.end_date else f"{item.start_date:%b %Y} – Present"
         if item.evidence:
-            selected = _select_experience_statements(item.evidence, jd, jd_text)
+            selected = _select_experience_statements(item.evidence, jd, jd_text, _archetype_signals(impact))
             details = [_impact_experience_line(statement, item, impact) for statement in selected]
         else:
             details = [clean_list_marker(item.description)] if item.description.strip() else []
@@ -890,23 +1074,101 @@ def _impact_experience_line(statement, experience, impact: _ImpactContext | None
     return rewrite.rewritten_text
 
 
+_LEXICAL_SKILL_CATEGORY = {
+    "nosql": SkillCategory.DATABASE, "git": SkillCategory.DEVOPS, "object-oriented design": SkillCategory.LANGUAGE, "java": SkillCategory.LANGUAGE,
+    "c++": SkillCategory.LANGUAGE, "c#": SkillCategory.LANGUAGE, "go": SkillCategory.LANGUAGE,
+    "rust": SkillCategory.LANGUAGE, "kotlin": SkillCategory.LANGUAGE, "scala": SkillCategory.LANGUAGE,
+    "typescript": SkillCategory.LANGUAGE, "kubernetes": SkillCategory.DEVOPS, "terraform": SkillCategory.DEVOPS,
+    "grafana": SkillCategory.DEVOPS, "prometheus": SkillCategory.DEVOPS, "gcp": SkillCategory.CLOUD,
+    "azure": SkillCategory.CLOUD,
+}
+
+
+def _align_project_bullets(projects: list[ProjectBlock], jd_keys: set[str], view) -> list[str]:
+    actions = []
+    for project in projects:
+        source = view.by_entity.get(project.project_id, "")
+        for bullet in project.bullets:
+            text, applied = jd_lexicon.align_text(bullet.text, jd_keys, source)
+            if applied:
+                bullet.original_quote = bullet.original_quote or bullet.text
+                if bullet.provenance:
+                    bullet.provenance = {**bullet.provenance, "rewritten_text": text, "rewrite_rationale": [
+                        *bullet.provenance.get("rewrite_rationale", []), *(f"lexical_alignment:{t}" for t in applied)]}
+                bullet.text = text
+                actions.append(f"lexical: aligned {project.project_id} bullet to JD term(s) {', '.join(applied)}")
+    return actions
+
+
+def _align_experience(document: CVDocument, jd_keys: set[str], view, impact: _ImpactContext | None) -> list[str]:
+    """Internship lines in the JD's wording, only through jd_lexicon's rules grounded in that role's own
+    evidence; the line keeps its source statement (audit trail) under the new text."""
+    actions = []
+    for entry in document.experience:
+        source = view.by_entity.get(entry.heading, "")
+        for index, detail in enumerate(entry.details):
+            text, applied = jd_lexicon.align_text(detail, jd_keys, source)
+            if not applied:
+                continue
+            entry.details[index] = text
+            if impact is not None and detail in impact.experience:
+                impact.experience[text] = impact.experience[detail]
+            actions.append(f"lexical: aligned internship line ({entry.heading}) to JD term(s) {', '.join(applied)}")
+    return actions
+
+
+def _compose_final_summary(document: CVDocument, job: Job, impact: _ImpactContext, candidate: CandidateProfile,
+                           theme: str, evidence_by_id: dict) -> str | None:
+    from jobintel.matching.cv_summary import compose_summary
+    summary = compose_summary(jd_text=job.description, job_title=job.title, projects=document.projects,
+                              education=document.education, headline=document.headline, evidence_by_id=evidence_by_id,
+                              theme=theme)
+    if summary:
+        summary, _, _ = impact_writing.narrow_summary(summary, _grounded_corpus(candidate), impact.policy)
+    return summary
+
+
+def _compress_education(education: list[DatedEntry], theme: str, jd_text: str) -> list[DatedEntry]:
+    """Relevant Modules cut to the JD-relevant few (cv_editorial.select_modules); a line with no relevant
+    module is omitted, the degree heading stays."""
+    out = []
+    for entry in education:
+        details = [line for line in (cv_editorial.select_modules(d, theme, jd_text) for d in entry.details) if line]
+        out.append(DatedEntry(heading=entry.heading, dates=entry.dates, details=details))
+    return out
+
+
 def _assemble_document(candidate: CandidateProfile, jd: JDRequirements, projects: list[ProjectBlock], skill_groups, jd_text: str = "",
-                       impact: _ImpactContext | None = None) -> CVDocument:
+                       impact: _ImpactContext | None = None, *, job_title: str = "", theme: str | None = None,
+                       evidence_by_id: dict | None = None) -> tuple[CVDocument, CVTitle]:
     """Stable core sections come from structured Education/Experience records
     when present, otherwise verbatim from the candidate's own authored CV text.
-    A section neither can supply is left empty (and reported), never invented."""
+    A section neither can supply is left empty (and reported), never invented.
+    The heading is this job's own title, truthfully normalised (cv_title); the authored
+    headline only when the job title cannot be presented (e.g. a management title)."""
     base = select_base_cv(candidate, _jd_terms(jd))
     authored = base[1] if base else None
     education = _education_entries(candidate) or (copy.deepcopy(authored.education) if authored else [])
+    if theme is not None:
+        education = _compress_education(education, theme, jd_text)
     experience = _experience_entries(candidate, jd, jd_text, impact) or (copy.deepcopy(authored.experience) if authored else [])
     summary = authored.summary if authored else None
+    grounded = {name.casefold() for name, cap in candidate.capabilities.items() if cap.evidence_tier in {"strong", "partial"}}
+    title = cv_title(job_title, authored.headline if authored else "", grounded=grounded)
+    if impact is not None:
+        # Target identity first, then the page's own evidence (cv_summary); the authored summary only when
+        # nothing grounds a composed one.
+        from jobintel.matching.cv_summary import compose_summary
+        composed = compose_summary(jd_text=jd_text, job_title=job_title, projects=projects, education=education,
+                                   headline=title.title, evidence_by_id=evidence_by_id, theme=theme)
+        summary = composed or summary
     if impact is not None and summary:
         impact.summary_original = summary
         summary, impact.summary_removed, impact.summary_generic = impact_writing.narrow_summary(
             summary, _grounded_corpus(candidate), impact.policy)
     return CVDocument(
         name=candidate.name,
-        headline=authored.headline if authored else "",
+        headline=title.title,
         contact_line=_contact_line(candidate),
         summary=summary,
         education=education,
@@ -914,7 +1176,7 @@ def _assemble_document(candidate: CandidateProfile, jd: JDRequirements, projects
         projects=projects,
         experience=experience,
         base_cv_source_id=base[0].evidence_source.id if base else None,
-    )
+    ), title
 
 
 # --- Real one-page fitting: semantic reduction on overflow, restoration on underfill ---
@@ -935,8 +1197,12 @@ class _PageFitter:
         extra_skills: list[str],
         protected_skills: set[str],
         categories: dict,
+        archetype_signals: list[re.Pattern] = (),
+        theme: str | None = None,
     ) -> None:
+        self.theme = theme
         self.pdf_path = pdf_path
+        self.archetype_signals = list(archetype_signals)
         self.full = copy.deepcopy(document)
         self.doc = document
         self.jd = jd
@@ -959,39 +1225,49 @@ class _PageFitter:
         if result.page_count > 1:
             return self.doc, result
         # Geometry before deletion: fill the reduced document at the current
-        # preset and at each denser professional preset, and keep the LEAST
-        # dense preset that leaves the least useful grounded content off the
-        # page -- a denser layout is only used when it keeps real content,
-        # never merely to shrink the margins or to fit more skills.
+        # preset and at each denser professional preset. Choose by, in order:
+        # least missing PROJECT evidence, then the larger body font, then least
+        # other missing useful content (internship detail), then the less dense
+        # preset -- so a smaller font is only used to keep project evidence,
+        # never for internship bullets, modules or skills.
         reduced_doc, reduced_layout, reduced_actions = copy.deepcopy(self.doc), self.layout, list(self.actions)
         best = None
         for layout in range(reduced_layout, len(LAYOUT_PRESETS)):
             self.doc, self.layout, self.actions = copy.deepcopy(reduced_doc), layout, list(reduced_actions)
+            # Each trial starts with internship detail at its floor, so project evidence reclaims
+            # space first; the fill restores JD-relevant internship bullets only into what is left.
+            self._floor_internships()
             if layout != reduced_layout:
                 preset = LAYOUT_PRESETS[layout]
-                self.actions.append(f"layout: preset {preset.name} ({preset.margin_mm:g}mm margins, {preset.body_pt:g}pt body) to keep useful content")
+                self.actions.append(f"layout: preset {preset.name} ({preset.margin_mm:g}mm margins, {preset.sides_mm:g}mm sides, "
+                                    f"{preset.body_pt:g}pt body) to keep useful content")
             self._fill()
-            missing = self._missing_useful_weight()
-            if best is None or missing < best[0] - 1e-9:
-                best = (missing, layout, self.doc, self.actions)
-            if missing <= 0:
+            project_missing, other_missing = self._missing_useful_weight()
+            key = (round(project_missing, 6), -LAYOUT_PRESETS[layout].body_pt, round(other_missing, 6))
+            if best is None or key < best[0]:
+                best = (key, layout, self.doc, self.actions)
+            if project_missing <= 0 and other_missing <= 0:
                 break
         _, self.layout, self.doc, self.actions = best
         return self.doc, self.render()
 
     def _reduce(self) -> RenderResult:
         result = self.render()
+        # Space priority (editorial layer): weak modules, low-value skills, then repeated / inventory bullets,
+        # then supporting-project detail -- the strongest JD evidence is trimmed last.
         reductions = (
-            self._drop_repetitive_bullet,
-            self._drop_extra_internship_bullet,
             lambda: self._trim_module_list(CONCISE_MODULES),
             self._drop_low_value_skill,
+            self._drop_repetitive_bullet,
+            lambda: self._reduce_tier("supporting", 1),
             self._denser_layout,
-            self._reduce_secondary_project,
-            self._drop_internship_below_floor,
-            self._drop_weakest_secondary_project,
+            self._drop_extra_internship_bullet,
+            lambda: self._reduce_tier("focus", FOCUS_BULLET_FLOOR),
+            lambda: self._drop_weakest_project("supporting"),
             self._narrow_layout,
-            self._reduce_focus_project,
+            lambda: self._reduce_tier("secondary", SECONDARY_BULLET_FLOOR),
+            self._drop_internship_below_floor,
+            lambda: self._drop_weakest_project("secondary"),
             self._shorten_wording,
             lambda: self._trim_module_list(MIN_MODULES),
             self._reduce_below_focus_floor,
@@ -1015,20 +1291,27 @@ class _PageFitter:
                 accepted.append(label)
         return accepted
 
-    def _missing_useful_weight(self) -> float:
-        """Weight of useful content not on the page: focus-project evidence,
-        non-repetitive secondary evidence (including whole dropped projects)
-        and JD-relevant internship detail."""
+    def _floor_internships(self) -> None:
+        for entry in self.doc.experience:
+            if len(entry.details) > INTERNSHIP_DETAIL_FLOOR:
+                keep = self._ranked_details(entry.details)[:INTERNSHIP_DETAIL_FLOOR]
+                entry.details = [detail for detail in entry.details if detail in keep]
+
+    def _missing_useful_weight(self) -> tuple[float, float]:
+        """(project, other): weight of useful content not on the page -- focus-project evidence and
+        non-repetitive other project evidence (including whole dropped projects); then JD-relevant
+        internship detail."""
         present = {project.project_id: {_bullet_key(bullet) for bullet in project.bullets} for project in self.doc.projects}
-        missing = 0.0
+        project_missing = 0.0
         for project in self.full.projects:
             for bullet in project.bullets:
                 useful = project.emphasis == "focus" or bullet.redundancy < REDUNDANT_OVERLAP
                 if useful and _bullet_key(bullet) not in present.get(project.project_id, set()):
-                    missing += max(bullet.weight, 0.1)
+                    project_missing += max(bullet.weight, 0.1)
+        other_missing = 0.0
         for full_entry, entry in zip(self.full.experience, self.doc.experience):
-            missing += sum(1.0 for detail in full_entry.details if _jd_term_overlap(detail, self.jd) > 0 and detail not in entry.details)
-        return missing
+            other_missing += sum(1.0 for detail in full_entry.details if _jd_term_overlap(detail, self.jd) > 0 and detail not in entry.details)
+        return project_missing, other_missing
 
     # -- relevance: JD-named terms first, JD wording only as a tie-breaker --
 
@@ -1039,9 +1322,14 @@ class _PageFitter:
     def _experience_relevance(self, text: str) -> float:
         return _experience_relevance(text, self.jd, self.jd_dimensions, self.jd_topics)
 
+    def _experience_order(self, text: str) -> float:
+        """Relevance plus the archetype's ordering preference (cut-offs use relevance alone)."""
+        relevance = self._experience_relevance(text)
+        return relevance + (_archetype_preference(text, self.archetype_signals) if relevance > 0 else 0.0)
+
     def _ranked_details(self, details: list[str]) -> list[str]:
         # Stable: equal scores keep the authored order.
-        return sorted(details, key=lambda detail: -self._experience_relevance(detail))
+        return sorted(details, key=lambda detail: -self._experience_order(detail))
 
     # -- internship budget: >= 1 bullet per role, more when JD-relevant or technically substantive --
 
@@ -1074,7 +1362,7 @@ class _PageFitter:
 
     def _drop_extra_internship_bullet(self, floor: int = INTERNSHIP_DETAIL_FLOOR) -> str | None:
         extras = [
-            (self._experience_relevance(detail), -index, entry, detail)
+            (self._experience_order(detail), -index, entry, detail)
             for index, entry in enumerate(self.doc.experience)
             if len(entry.details) > floor
             for detail in entry.details
@@ -1125,51 +1413,39 @@ class _PageFitter:
         self.doc.skill_groups = [group for group in self.doc.skill_groups if group.skills]
         return f"overflow: dropped lower-value skill {weakest}"
 
-    def _denser_layout(self) -> str | None:
-        if self.layout >= 2:
+    def _step_layout(self, limit: int) -> str | None:
+        if self.layout >= limit:
             return None
         self.layout += 1
         preset = LAYOUT_PRESETS[self.layout]
-        return f"overflow: layout preset {preset.name} ({preset.margin_mm:g}mm margins, {preset.body_pt:g}pt body)"
+        return (f"overflow: layout preset {preset.name} ({preset.margin_mm:g}mm margins, "
+                f"{preset.sides_mm:g}mm sides, {preset.body_pt:g}pt body)")
+
+    def _denser_layout(self) -> str | None:
+        """Tighter margins at the full body size (up to the last 10pt preset)."""
+        full_size = max(index for index, preset in enumerate(LAYOUT_PRESETS) if preset.body_pt >= LAYOUT_PRESETS[0].body_pt)
+        return self._step_layout(full_size)
 
     def _narrow_layout(self) -> str | None:
-        if self.layout + 1 >= len(LAYOUT_PRESETS):
-            return None
-        self.layout += 1
-        preset = LAYOUT_PRESETS[self.layout]
-        return f"overflow: layout preset {preset.name} ({preset.margin_mm:g}mm margins, {preset.body_pt:g}pt body)"
+        return self._step_layout(len(LAYOUT_PRESETS) - 1)
 
-    def _secondary(self) -> list[ProjectBlock]:
-        return [project for project in self.doc.projects if project.emphasis == "secondary"]
-
-    def _reduce_secondary_project(self) -> str | None:
-        candidates = [(project, bullet) for project in self._secondary() if len(project.bullets) > 1 for bullet in project.bullets]
+    def _reduce_tier(self, tier: str, floor: int) -> str | None:
+        """Drop the weakest bullet of a `tier` project that still has more than `floor` bullets."""
+        candidates = [(project, bullet) for project in self.doc.projects
+                      if project.emphasis == tier and len(project.bullets) > floor for bullet in project.bullets]
         if not candidates:
             return None
         project, bullet = min(candidates, key=lambda item: item[1].weight)
         project.bullets.remove(bullet)
-        return f"overflow: dropped weakest secondary bullet from {project.project_id}"
+        return f"overflow: dropped weakest {tier} bullet from {project.project_id}"
 
-    def _drop_weakest_secondary_project(self) -> str | None:
-        secondary = self._secondary()
-        if not secondary or len(self.doc.projects) <= MIN_PROJECTS:
+    def _drop_weakest_project(self, tier: str) -> str | None:
+        projects = [project for project in self.doc.projects if project.emphasis == tier]
+        if not projects or len(self.doc.projects) <= MIN_PROJECTS:
             return None
-        project = min(secondary, key=_project_strength)
+        project = min(projects, key=_project_strength)
         self.doc.projects.remove(project)
-        return f"overflow: dropped weakest secondary project {project.project_id}"
-
-    def _reduce_focus_project(self) -> str | None:
-        candidates = [
-            (project, bullet)
-            for project in self.doc.projects
-            if project.emphasis == "focus" and len(project.bullets) > FOCUS_BULLET_FLOOR
-            for bullet in project.bullets
-        ]
-        if not candidates:
-            return None
-        project, bullet = min(candidates, key=lambda item: item[1].weight)
-        project.bullets.remove(bullet)
-        return f"overflow: dropped weakest focus bullet from {project.project_id}"
+        return f"overflow: dropped weakest {tier} project {project.project_id}"
 
     def _reduce_below_focus_floor(self) -> str | None:
         candidates = [(project, bullet) for project in self.doc.projects if len(project.bullets) > 1 for bullet in project.bullets]
@@ -1211,7 +1487,7 @@ class _PageFitter:
             for bullet in full_projects[project_id].bullets:
                 existing = current.get(_bullet_key(bullet))
                 if existing is None or existing.text != bullet.text:
-                    missing_bullets.append((project.emphasis != "focus", -bullet.weight, bullet))
+                    missing_bullets.append((TIER_RANK.get(project.emphasis, 2), -bullet.weight, bullet))
         # Repetitive project bullets are restored only after internship evidence.
         repetitive = [item for item in missing_bullets if item[2].redundancy >= REDUNDANT_OVERLAP]
         for _, _, bullet in sorted((item for item in missing_bullets if item not in repetitive), key=lambda item: item[:2]):
@@ -1228,7 +1504,7 @@ class _PageFitter:
         # Only JD-relevant or technically substantive internship detail earns
         # space beyond the 1-bullet floor; generic bullets never fill the page.
         experience_details = [
-            (-self._experience_relevance(detail), entry_index, detail)
+            (-self._experience_order(detail), entry_index, detail)
             for entry_index, entry in enumerate(self.full.experience)
             for detail in entry.details
             if self._experience_relevance(detail) > 0
@@ -1248,11 +1524,12 @@ class _PageFitter:
         project = next((item for item in doc.projects if item.project_id == bullet.project_id), None)
         if project is None:
             return None
-        focus_counts = [len(item.bullets) for item in doc.projects if item.emphasis == "focus"]
+        rank = TIER_RANK.get(project.emphasis, 2)
+        higher = [len(item.bullets) for item in doc.projects if TIER_RANK.get(item.emphasis, 2) < rank]
         adding = not any(_bullet_key(item) == _bullet_key(bullet) for item in project.bullets)
-        # Page space follows priority: a secondary project never grows past
-        # the smallest focus project.
-        if project.emphasis == "secondary" and adding and focus_counts and len(project.bullets) + 1 > min(focus_counts):
+        # Page space follows priority: a lower-tier project never grows past the smallest
+        # higher-tier project.
+        if adding and higher and len(project.bullets) + 1 > min(higher):
             return None
         order = [_bullet_key(item) for item in next(p for p in self.full.projects if p.project_id == project.project_id).bullets]
         kept = [item for item in project.bullets if _bullet_key(item) != _bullet_key(bullet)]
@@ -1290,7 +1567,8 @@ class _PageFitter:
         if skill in doc.skills() or len(doc.skills()) >= MAX_TOTAL_SKILLS:
             return None
         ordered = sorted([*doc.skills(), skill], key=lambda name: self.skill_order.get(name.casefold(), len(self.skill_order)))
-        doc.skill_groups = group_skills(ordered, self.categories)
+        doc.skill_groups = (cv_editorial.group_skills(ordered, self.categories, self.theme) if self.theme
+                            else group_skills(ordered, self.categories))
         return f"underfill: added supported skill {skill}"
 
 
@@ -1305,11 +1583,13 @@ def _writing_quality(candidate: CandidateProfile, document: CVDocument, impact: 
     """Writing Quality Gate over the FINAL (fitted) document, plus review-gate reasons."""
     project_text: dict[str, str] = {}
     allowed: dict[str, set[str]] = {}
+    forbidden: dict[str, set[str]] = {project.id: set(project.forbidden_extrapolations or ()) for project in candidate.projects}
     for capability in candidate.capabilities.values():
         for evidence in capability.evidence:
             if evidence.project_id:
                 project_text[evidence.project_id] = project_text.get(evidence.project_id, "") + " " + evidence.quote
                 allowed.setdefault(evidence.project_id, set()).add(capability.name.casefold())
+                forbidden.setdefault(evidence.project_id, set()).update(evidence.forbidden_extrapolations or ())
     projects_by_id = {project.id: project for project in candidate.projects}
     for pid, text in project_text.items():
         allowed[pid] |= extract_tech_entities(text)
@@ -1317,6 +1597,22 @@ def _writing_quality(candidate: CandidateProfile, document: CVDocument, impact: 
             allowed[pid] |= extract_tech_entities(projects_by_id[pid].description or "")
     repo = {project.project_id: impact_writing.repo_readme_text(impact.store_root, getattr(projects_by_id.get(project.project_id), "repository_full_name", None))
             for project in document.projects}
+    from jobintel.repo_capability_map import corroboration_text
+    from jobintel.repo_code_evidence import code_evidence_text
+
+    from jobintel.repo_capability_map import map_languages
+
+    def _languages(repo):
+        # The GitHub languages record can be older than the mapped commit: a language present in the project's own
+        # source at that commit is never "contradicted" by a stale record.
+        cached, mapped = impact_writing.repo_languages(impact.store_root, repo), map_languages(impact.store_root, repo)
+        return None if cached is None and mapped is None else (cached or set()) | (mapped or set())
+
+    def _code(repo):
+        texts = [t for t in (code_evidence_text(impact.store_root, repo), corroboration_text(impact.store_root, repo)) if t]
+        return "\n".join(texts) or None
+    repo_code = {project.project_id: _code(getattr(projects_by_id.get(project.project_id), "repository_full_name", None))
+                 for project in document.projects}
     bullets = [b for project in document.projects for b in project.bullets]
     rewrites = [_rewrite_from(b.provenance) for b in bullets if b.provenance]
     experience_lines = [detail for entry in document.experience for detail in entry.details]
@@ -1324,7 +1620,9 @@ def _writing_quality(candidate: CandidateProfile, document: CVDocument, impact: 
     report = impact_writing.writing_quality_report(
         [(project.project_id, [(b.text, b.evidence_ids) for b in project.bullets]) for project in document.projects],
         experience_lines, document.summary, impact.policy, project_evidence_text=project_text, project_allowed_tech=allowed,
-        repo_text=repo, rewrites=rewrites + experience_rewrites)
+        repo_text=repo, repo_code=repo_code, rewrites=rewrites + experience_rewrites, project_forbidden=forbidden,
+        repo_languages={project.project_id: _languages(getattr(projects_by_id.get(project.project_id), "repository_full_name", None))
+            for project in document.projects})
     report["archetype"] = impact.archetype
     report["experience_rewrites"] = [r.to_dict() for r in experience_rewrites]
     report["summary"] = {"original": impact.summary_original, "rendered": document.summary,

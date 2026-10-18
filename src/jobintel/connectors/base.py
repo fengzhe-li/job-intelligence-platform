@@ -53,10 +53,12 @@ class PartialFetchError(Exception):
 class ConnectorQuery:
     keywords: tuple[str, ...] = ()
     location: str = "United Kingdom"
-    # Multi-identifier ATS connectors apply this cap PER identifier (board/
-    # site/tenant), never across all of them combined -- a combined cap made
-    # whichever boards came last in the registry silently invisible.
+    # Result-size hint for list-style sources (search APIs, imports). It is NOT a cap on a direct-ATS
+    # board/site/tenant: a 100-job default once silently dropped 212 of Palantir's 312 Lever postings.
     limit: int = 50
+    # Per board/site/tenant TECHNICAL safety ceiling for direct-ATS connectors (None = SCOPE_SAFETY_CAP).
+    # Reaching it marks the scope incomplete with the exact missing range; it never closes jobs.
+    scope_cap: int | None = None
     since: datetime | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -99,6 +101,10 @@ class SourceSnapshot:
         return self.payloads
 
 
+# Direct-ATS listings are fetched until exhausted; this only guards against a runaway source.
+SCOPE_SAFETY_CAP = 5000
+
+
 class ScopeCollector:
     """Accumulates one multi-identifier fetch into a SourceSnapshot, applying
     the per-identifier limit and recording exactly why a scope is incomplete.
@@ -120,20 +126,37 @@ class ScopeCollector:
         self.complete.discard(scope)
         self.incomplete.setdefault(scope, reason)
 
-    def add_scope(self, scope: str, listed: list[RawJobPayload], filtered_out: int = 0, exhausted: bool = True) -> None:
-        """`listed`: this scope's relevant payloads, in source order.
+    @property
+    def cap(self) -> int:
+        return self.query.scope_cap if self.query.scope_cap is not None else SCOPE_SAFETY_CAP
+
+    def add_scope(self, scope: str, listed: list[RawJobPayload], filtered_out: int = 0, exhausted: bool = True,
+                  listed_total: int | None = None) -> None:
+        """`listed`: this scope's relevant payloads, in source order (possibly from several pages).
         `filtered_out`: listed jobs dropped by the query's keyword filter.
         `exhausted`: False if pagination stopped at a safety cap rather than
-        at the real end of the listing."""
-        tagged = [_with_scope(payload, scope) for payload in listed]
-        kept = tagged[: self.query.limit]
+        at the real end of the listing; `listed_total` (when the source reports it) names the
+        missing range. A posting repeated across pages is kept once (first occurrence)."""
+        seen: set[str] = set()
+        unique = []
+        for payload in listed:
+            if payload.source_job_id in seen:
+                continue
+            seen.add(payload.source_job_id)
+            unique.append(payload)
+        tagged = [_with_scope(payload, scope) for payload in unique]
+        kept = tagged[: self.cap]
         self.payloads.extend(kept)
         if len(kept) < len(tagged):
-            self.mark_incomplete(scope, f"truncated at limit {self.query.limit} of {len(tagged)} listed jobs")
+            self.mark_incomplete(scope, f"truncated at safety cap {self.cap} of {len(tagged)} listed jobs "
+                                        f"(positions {self.cap + 1}-{len(tagged)} not kept)")
         if filtered_out:
             self.mark_incomplete(scope, f"keyword-filtered query dropped {filtered_out} listed job(s)")
         if not exhausted:
-            self.mark_incomplete(scope, "pagination stopped at a safety page cap before the end of the listing")
+            fetched = len(listed) + filtered_out
+            missing = (f"; source reports {listed_total}, so positions {fetched + 1}-{listed_total} were not fetched"
+                       if isinstance(listed_total, int) and listed_total > fetched else "")
+            self.mark_incomplete(scope, f"pagination stopped at a safety page cap after {fetched} listed job(s){missing}")
         if scope not in self.incomplete:
             self.complete.add(scope)
 

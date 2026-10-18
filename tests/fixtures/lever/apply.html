@@ -1,0 +1,106 @@
+<!doctype html><html><head><title>ExampleCo - Graduate Engineer</title></head><body>
+<!-- Synthetic Lever-style hosted application form (offline), shaped like the audited public page:
+     one multipart form; the resume input's change POSTs the file once to /parseResume (same host),
+     which answers a profile and the page then shows the file name; location suggestions are a GET
+     /searchLocations; per-posting "cards" questions; marketing consent; the final submit sits behind a
+     captcha button. Query: mode=ok | parse_fail (parse answers 500) | extra_post (an unknown same-host POST
+     at load) | parse_twice (the page POSTs the resume twice) | no_name (the file name is never shown) | security_ok
+     (Cloudflare + hCaptcha bootstrap + analytics at load) | captcha_challenge | security_leak.
+     loc=uk|ontario|none|ambiguous|clear: the real location picker with that suggestion list -->
+<div class="posting-headline"><h2>Graduate Engineer</h2><div class="company">ExampleCo</div></div>
+<form id="application-form" enctype="multipart/form-data" method="POST" action="">
+  <div class="application-question"><label for="resume-upload-input">Resume/CV</label>
+    <input type="file" name="resume" id="resume-upload-input"><span id="resume-filename"></span></div>
+  <input type="hidden" name="resumeStorageId" id="rsid">
+  <div class="application-question"><label for="name">Full name</label><input type="text" name="name" id="name" required></div>
+  <div class="application-question"><label for="email">Email</label><input type="email" name="email" id="email" required></div>
+  <div class="application-question"><label for="phone">Phone</label><input type="text" name="phone" id="phone"></div>
+  <div class="application-question"><label for="location-input">Current location</label>
+    <input type="text" name="location" id="location-input" class="location-input" required></div>
+  <div class="application-question"><label for="org">Current company</label><input type="text" name="org" id="org"></div>
+  <div class="application-question"><label for="li">LinkedIn URL</label><input type="text" name="urls[LinkedIn]" id="li"></div>
+  <div class="application-question"><label for="gh">GitHub URL</label><input type="text" name="urls[GitHub]" id="gh"></div>
+  <div class="application-question"><label for="spons">Will you now or in the future require visa sponsorship?</label>
+    <select name="cards[c1][field0]" id="spons" required><option value=""></option><option>Yes</option><option>No</option></select></div>
+  <div class="application-question"><label for="why">Why ExampleCo? Please answer in your own words; AI-generated answers will be rejected.</label>
+    <textarea name="cards[c2][field0]" id="why" required></textarea></div>
+  <div class="application-question"><label for="consent">I agree to receive marketing emails</label>
+    <input type="checkbox" name="consent[marketing]" id="consent"></div>
+  <button type="button" id="btn-submit">Submit application</button>
+</form>
+<script>
+  const q = new URLSearchParams(location.search);
+  const mode = q.get("mode") || "ok";
+  document.getElementById("btn-submit").addEventListener("click", () => {
+    document.body.dataset.submitted = "1";
+    fetch(location.pathname, {method: "POST", body: new FormData(document.getElementById("application-form"))});
+  });
+  if (mode === "extra_post") fetch("/telemetry", {method: "POST", body: "x"});
+  if (q.get("labels") === "real") {  // the audited page: "✱" required markers and the upload button text
+    for (const id of ["resume-upload-input", "name", "email", "location-input"])
+      document.querySelector(`label[for="${id}"]`).insertAdjacentHTML("beforeend", '<span class="required">\u2731</span>');
+    document.querySelector('label[for="resume-upload-input"]').insertAdjacentHTML("beforeend", " <span>ATTACH RESUME/CV</span>");
+    document.getElementById("resume-filename").style.textTransform = "uppercase";  // as the real upload button
+  }
+  if (mode === "security_ok" || mode === "captcha_challenge") {
+    fetch("/cdn-cgi/challenge-platform/h/g/jsd/oneshot/abc/0.1:2:tok/def", {method: "POST", body: "opaque"});
+    fetch("https://api.hcaptcha.com/checksiteconfig?v=1&host=x", {method: "POST", body: "cfg"});
+    fetch("https://www.google-analytics.com/j/collect?v=1", {method: "POST", body: "ga"});
+  }
+  if (mode === "captcha_challenge") fetch("https://api.hcaptcha.com/getcaptcha/abc", {method: "POST", body: "c"});
+  if (mode === "security_leak")
+    fetch("/cdn-cgi/challenge-platform/h/g/x", {method: "POST", body: "email=sam@example.org"});
+  function parse(file) {
+    const fd = new FormData(); fd.append("resume", file, file.name); fd.append("accountId", "acct");
+    const req = new XMLHttpRequest();
+    req.onreadystatechange = () => {
+      if (req.readyState !== 4) return;
+      if (req.status === 200) {
+        const p = JSON.parse(req.response);
+        document.getElementById("rsid").value = p.resumeStorageId;
+        if (mode !== "no_name") document.getElementById("resume-filename").textContent = file.name;
+      }
+    };
+    req.open("POST", "/parseResume", true); req.send(fd);
+  }
+  document.getElementById("resume-upload-input").addEventListener("change", function () {
+    const f = this.files[0]; if (!f) return;
+    parse(f);
+    if (mode === "parse_twice") setTimeout(() => parse(f), 50);
+  });
+  const locMode = q.get("loc");  // the audited picker: search on keydown, clear on blur unless a suggestion is chosen
+  // Suggestions for whatever city was typed (c), shaped like the real list: "<c>, England, United Kingdom" etc.
+  // Representative hosted location list shape: "<c>, <county>, England, GBR", "<c>, ON, CAN", "<c>, OH, USA".
+  const SUGGESTIONS = {uk: (c) => [`${c}, Greater ${c}, England, GBR`, `${c}, ON, CAN`, `${c}, OH, USA`, `${c}derry, Derry, Northern Ireland, GBR`],
+                       ontario: (c) => [`${c}, ON, CAN`, `${c}, OH, USA`], none: (c) => [],
+                       ambiguous: (c) => [`${c}, Greater ${c}, England, GBR`, `${c}, Kent, England, GBR`],
+                       clear: (c) => [`${c}, Greater ${c}, England, GBR`]};
+  const locInput = document.getElementById("location-input");
+  if (!locMode) {
+    locInput.addEventListener("input", function () { fetch("/searchLocations?text=" + encodeURIComponent(this.value)); });
+  } else {
+    locInput.insertAdjacentHTML("afterend", '<div class="dropdown-container" style="display:none"><div class="dropdown-results"></div></div>');
+    const box = locInput.parentElement.querySelector(".dropdown-container"), results = box.querySelector(".dropdown-results");
+    locInput.addEventListener("input", () => { box.style.display = "block"; });
+    locInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { document.body.dataset.enterPressed = "1"; return; }
+      clearTimeout(locInput._t);
+      locInput._t = setTimeout(() => {
+        fetch("/searchLocations?text=" + encodeURIComponent(locInput.value));
+        results.innerHTML = "";
+        (SUGGESTIONS[locMode] ? SUGGESTIONS[locMode](locInput.value.trim()) : []).forEach((name, i) =>
+          results.insertAdjacentHTML("beforeend", `<div class="dropdown-location" id="location-${i}">${name}</div>`));
+        box.style.display = "block";
+      }, 150);
+    });
+    locInput.addEventListener("blur", () => {
+      if (box.style.display !== "none") { box.style.display = "none"; results.innerHTML = ""; locInput.value = ""; }
+    });
+    document.addEventListener("mousedown", (e) => {
+      if (!e.target.classList.contains("dropdown-location")) return;
+      box.style.display = "none"; locInput.value = e.target.textContent; results.innerHTML = "";
+      document.body.dataset.locationPicked = e.target.textContent;
+      if (locMode === "clear") setTimeout(() => { locInput.value = ""; }, 100);
+    });
+  }
+</script></body></html>

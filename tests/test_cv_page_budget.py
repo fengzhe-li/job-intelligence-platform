@@ -84,11 +84,14 @@ class CVPageBudgetTests(unittest.TestCase):
         }
         self.assertEqual([entry["heading"] for entry in education], list(source_modules))
         for entry in education:
-            self.assertEqual(len(entry["details"]), 1, entry)
+            self.assertLessEqual(len(entry["details"]), 1, entry)
+            if not entry["details"]:
+                continue
             label, modules = entry["details"][0].split(": ", 1)
             self.assertTrue(label.startswith("Relevant Modules"))
             names = modules.split(", ")
-            self.assertGreaterEqual(len(names), 2)
+            # 2026-10-15 editorial policy: at most three JD-relevant modules (the line may be omitted when none is).
+            self.assertTrue(1 <= len(names) <= 3, names)
             # Whole, verbatim module names only -- a subset, never sliced text.
             for name in names:
                 self.assertIn(name, source_modules[entry["heading"]].split(", "))
@@ -118,7 +121,9 @@ class CVPageBudgetTests(unittest.TestCase):
     def test_denser_preset_is_used_before_deleting_useful_content(self) -> None:
         # This CV cannot hold all its useful evidence at normal margins, so it
         # must not stay at 18mm while secondary/focus content is being cut.
-        self.assertIn(self.artifact.layout_preset, {"compact", "narrow"})
+        # Margins tighten before the font shrinks: "tight" (10pt) is preferred to compact/narrow.
+        # (2026-10-15: the editorial layer compresses first, so "dense" can already be enough.)
+        self.assertIn(self.artifact.layout_preset, {"dense", "tight", "compact", "narrow"})
         preset = PRESET_NAMES[self.artifact.layout_preset]
         self.assertEqual(self.artifact.render_margin_mm, preset.margin_mm)
         self.assertEqual(self.artifact.render_body_pt, preset.body_pt)
@@ -129,12 +134,14 @@ class CVPageBudgetTests(unittest.TestCase):
 
     def test_no_text_is_clipped_or_placed_outside_the_margins(self) -> None:
         margin = self.artifact.render_margin_mm * mm
+        sides = (self.artifact.render_side_margin_mm or self.artifact.render_margin_mm) * mm
+        self.assertGreaterEqual(sides, 10.0 * mm)
         width, height = A4
         runs = _text_runs(self.reader.pages[0])
         self.assertTrue(runs)
         for x_start, x_end, y in runs:
-            self.assertGreaterEqual(x_start, margin - 1)
-            self.assertLessEqual(x_end, width - margin + 2)
+            self.assertGreaterEqual(x_start, sides - 1)
+            self.assertLessEqual(x_end, width - sides + 2)
             self.assertGreaterEqual(y, margin - 1)
             self.assertLessEqual(y, height - margin)
 

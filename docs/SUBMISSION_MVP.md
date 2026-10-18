@@ -439,3 +439,37 @@ stops the run (`blocked`); anything incomplete escalates to the human. Outside t
 every one of these writes is fatal, as are unknown file/form mutations and any final or
 submit mutation. Run summaries report `cv_upload_steps` (`upload_handle_created`,
 `storage_written`, `form_associated`, `visible_in_page`, `responses_ok`).
+
+## Apply one application (`submission-apply-*`)
+
+Generic orchestration over the commands above, for one application id. It adds no permission.
+Package preparation, approval, enqueue, claim, execute, release and close are the same service
+calls, with the same checks.
+
+| Step | Command | What it does |
+|---|---|---|
+| 1 | `submission-apply-preview --application-id A` | Loads the application. Prepares the package normally (CV hash, JD match, eligibility, review gate, required answers). Matches the reviewed ATS execution profile by the URL's exact host, and refuses while another attempt is active. Prints the package hash, gate status, review reasons, CV id and answer field names, never values. Approves, queues and starts nothing. |
+| 1b | `... --acknowledge-blockers --reviewer R --ack-reason TEXT` | Only for a `BLOCK_AUTO_SUBMISSION` package. Writes one structured `SupervisedReviewAcknowledgement` to `supervised_acks/<cv-id>-<time>.json` for exactly the current review reasons (`SUPERVISED_EXECUTION_ONLY`, `final_submit_allowed: false`). It is written only after the normal package check accepts it, so eligibility and the application policy still apply, and it never overwrites a file. An existing acknowledgement that still binds this application, job, CV, PDF hash and reasons is reused instead. |
+| 2 | `submission-apply-start --application-id A --package-hash H --reviewer R --reviewed` | Re-prepares the package and refuses if the hash differs from H. An approval for the same hash that already backs an earlier request is revoked with the reason `superseded: approval already used by <request> (<status>)`. It then approves (the reviewer must be the acknowledging reviewer), queues one `local_browser` request for the profile's exact host, claims it and executes it once, with the profile's policy and a 30-minute human handoff. It prints a sanitized summary. It never creates an acknowledgement and never retries. |
+| 3 | `submission-apply-status --application-id A` (or `--request-id`) | The sanitized outcome of the latest `local_browser` attempt. Changes nothing. |
+| 4 | `submission-apply-release --application-id A` (or `--request-id`) | Ends the browser started for this attempt: only the journaled session, using the claim token stored for the request in the local store. The token is read in-process and never printed. Records no result. |
+| 5 | `submission-close --request-id R ...` | Unchanged. The human confirms nothing was submitted. |
+
+**Execution profiles** (`ats_profiles.py`) use exact-host matching: HTTPS, no port, credentials,
+case or trailing-dot variant, and no sub- or parent-domain fallback. Ashby and Greenhouse carry
+supervised-handoff validation; Lever and Workable are fixture-tested and require an explicit
+validation-run opt-in. Profiles specify exact reads, permitted fill/upload writes and nonfatal
+blocked telemetry. Every value is validated by `execute`.
+
+Work-authorisation and immigration fields are human-only for every executor. Cover-letter drafts
+remain local; their PDF/DOCX hashes can be bound into a sealed package without automating a free-text
+answer or final submission.
+
+`batch-prepare`, `batch-queue`, `batch-approve`, `batch-run-next` and `batch-status` orchestrate the
+same single-application services. The hash-chained batch ledger records decisions while item state
+is derived from the existing stores. Only one executor runs at a time; each handoff uses a new tab,
+and releasing that request closes only its bound tab. Employer restrictions and verification widgets
+can require a separate human decision before execution.
+
+After the human submits, `submission-human-submitted` records an explicit human-attested receipt
+for the sealed CV and package. It does not infer submission from a completed automation run.

@@ -127,27 +127,28 @@ def test_status_moves_through_selected_and_upload_handle_created(tmp_path, serve
 
 # --- H / I / J / K: radio question titles, then the deterministic rules ----------------------------------
 
-def test_H_I_ashby_style_radio_gets_its_own_title_and_sponsorship_resolves_yes(tmp_path, server_page):  # noqa: F811
+def test_H_I_ashby_style_radio_gets_its_own_title_and_sponsorship_stays_human_only(tmp_path, server_page):  # noqa: F811
     server, page, bundle, result = s3_run(tmp_path, server_page, "?mode=ok&storage=s3&layout=ashby")
     labels = {c["label"] for c in form(result)["controls_detected"] if c["kind"] == "radio"}
     assert "will you now or in the future require visa sponsorship to work in the uk?" in labels
     assert not any("please answer each question" in label for label in labels)
-    assert page.eval_on_selector("input[name=spons-a]:checked", "el => el.value") == "Yes"
-    filled = {f["field"]: f["page_label"] for f in form(result)["fields_filled"]}
-    assert filled["require_sponsorship_now_or_future"].startswith("will you now or in the future")
+    assert page.eval_on_selector_all("input[name=spons-a]:checked", "els => els.length") == 0
+    assert "require_sponsorship_now_or_future" not in {f["field"] for f in form(result)["fields_filled"]}
+    reasons = [q["screenshot_or_evidence"] for q in result.questions_escalated]
+    assert "runner:human_only:work_authorisation:require_sponsorship_now_or_future" in reasons
 
 
 def test_H_I_ashby_style_future_wording_variant(tmp_path, server_page):  # noqa: F811
     server, page, bundle, result = s3_run(tmp_path, server_page, "?mode=ok&storage=s3&layout=ashby&spons=future")
-    assert page.eval_on_selector("input[name=spons-a]:checked", "el => el.value") == "Yes"
+    assert page.eval_on_selector_all("input[name=spons-a]:checked", "els => els.length") == 0
 
 
-def test_H_J_aria_labelledby_radio_group_and_permanent_resolves_no(tmp_path, server_page):  # noqa: F811
+def test_H_J_aria_labelledby_radio_group_and_permanent_stays_human_only(tmp_path, server_page):  # noqa: F811
     server, page, bundle, result = s3_run(tmp_path, server_page, "?mode=ok&storage=s3&layout=aria&rtw=perm")
     labels = {c["label"] for c in form(result)["controls_detected"] if c["kind"] == "radio"}
     assert "do you have the permanent or unrestricted right to work in the uk?" in labels
-    assert page.eval_on_selector("input[name=rtw-a]:checked", "el => el.value") == "No"
-    assert "permanent_or_unrestricted_right_to_work" in {f["field"] for f in result.fields_filled}
+    assert page.eval_on_selector_all("input[name=rtw-a]:checked", "els => els.length") == 0
+    assert "permanent_or_unrestricted_right_to_work" not in {f["field"] for f in result.fields_filled}
 
 
 @pytest.mark.parametrize("query,question", [
@@ -184,10 +185,10 @@ def test_L_M_open_questions_and_linkedin_stay_with_the_human(tmp_path, server_pa
 def test_the_run_helper_names_exactly_the_observed_s3_write():
     import importlib.util
     from pathlib import Path
-    helper_path = Path(__file__).resolve().parents[1] / "scratchpad" / "final_transficc_run.py"
+    helper_path = Path(__file__).resolve().parents[1] / "scratchpad" / "local_profile_helper.py"
     if not helper_path.exists():
         pytest.skip("local operational helper not present")
-    spec = importlib.util.spec_from_file_location("final_transficc_run_s3_under_test", helper_path)
+    spec = importlib.util.spec_from_file_location("local_profile_helper_s3_under_test", helper_path)
     helper = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(helper)
     assert helper.CV_STORAGE_WRITES == (("POST", S3),)

@@ -14,7 +14,17 @@
        The upload flow: ApiCreateFileUploadHandle -> storage POST (form field "key" = the handle) ->
        ApiSetFormValueToFile naming the handle -> the page shows the file name.
        storage=test|s3 (s3 = the observed hosted-ATS S3 host)
-       spons=plain|future|ambiguous   rtw=perm|current|ambiguous   loc=ok|ambiguous
+       spons=plain|future|ambiguous   rtw=perm|current|ambiguous
+       loc=ok|ambiguous (place suggestions) | countries | country_none | country_dup (country suggestions
+         filtered by the typed text; none / a duplicate exact) | country_near (only near-misses such as
+         "United Kingdom of Sampleland", "United States") | cities (city suggestions)
+       ref=none|none_decoy|none_two (the Location combobox names no listbox: no aria-controls /
+         aria-owns; its options exist only after typing, in a list appended to <body> (the shape behind the
+         real run's combobox_no_listbox_reference). none_decoy = an unrelated country list is already open on the page beforehand;
+         none_two = typing opens a second, unrelated list with the same option too)
+       help=country|city|section|aria (the Location field's own helper text: "Country you're currently
+         residing in" / "Current city"; section = that country text only in the enclosing section's
+         instructions, outside the field's own entry; aria = the country text via aria-describedby)
        links=1 (GitHub Profile, Portfolio / Website and an ambiguous "Profile URL" field)
        layout=plain|ashby (sponsorship radio inside a section whose instructions precede the field's
        own title; the title's for= points at the first option)|aria (rtw group named by aria-labelledby) -->
@@ -31,9 +41,10 @@
     <div class="field-entry"><label for="web">Portfolio / Website</label><input id="web" type="url"></div>
     <div class="field-entry"><label for="amb">Profile URL</label><input id="amb" type="url"></div>
   </div>
-  <div class="field-entry"><label class="question-title">Location</label>
+  <div class="section" id="loc-section">
+  <div class="field-entry" id="loc-entry"><label class="question-title">Location</label>
     <div><input id="loc" role="combobox" aria-controls="loc-list" aria-expanded="false" autocomplete="off">
-      <ul id="loc-list" role="listbox" hidden></ul></div></div>
+      <ul id="loc-list" role="listbox" hidden></ul></div></div></div>
   <div class="field-entry" id="spons-entry"><label class="question-title" id="spons-title"></label>
     <div><label><input type="radio" name="spons" value="Yes"> Yes</label>
          <label><input type="radio" name="spons" value="No"> No</label></div></div>
@@ -97,18 +108,55 @@ document.querySelector('form').addEventListener('submit', (event) => {
 });
 // Location autocomplete: typing runs the suggestion READ, then shows synthetic suggestions.
 const loc = document.getElementById('loc'), list = document.getElementById('loc-list');
+const HELP = {country: "Country you’re currently residing in", city: 'Current city'};
+const help = q.get('help');
+if (help === 'country' || help === 'city') {
+  const p = document.createElement('p'); p.className = 'question-description'; p.textContent = HELP[help];
+  document.getElementById('loc-entry').insertBefore(p, loc.parentElement);
+}
+if (help === 'section') {
+  const p = document.createElement('p'); p.className = 'section-description'; p.textContent = HELP.country;
+  document.getElementById('loc-section').prepend(p);
+}
+if (help === 'aria') {
+  const s = document.createElement('span'); s.id = 'loc-desc'; s.textContent = HELP.country;
+  document.body.append(s); loc.setAttribute('aria-describedby', 'loc-desc');
+}
 const PLACES = {ok: ['Sampleton, Ontario, Canada', 'Sampleton, England, United Kingdom', 'Sampletonville, Texas, United States'],
-                ambiguous: ['Sampleton, England, United Kingdom', 'Sampleton, Wales, United Kingdom']};
+                ambiguous: ['Sampleton, England, United Kingdom', 'Sampleton, Wales, United Kingdom'],
+                countries: ['United Kingdom', 'United States', 'Ukraine'], country_none: [],
+                country_dup: ['United Kingdom', 'United Kingdom'], cities: ['Sampleton', 'Sampletonville'],
+                country_near: ['United Kingdom of Sampleland', 'United States', 'United Arab Emirates']};
+const TYPED = new Set(['countries', 'country_none', 'country_dup', 'cities', 'country_near']);  // filtered by the typed text
+const ref = q.get('ref');
+if (ref) {  // no listbox reference; the option list is created on demand outside the field
+  loc.removeAttribute('aria-controls'); list.remove(); list.removeAttribute('id');
+  if (ref === 'none_decoy') {
+    const d = document.createElement('div'); d.setAttribute('role', 'listbox'); d.id = 'decoy-list';
+    for (const name of ['United Kingdom', 'United States']) {
+      const o = document.createElement('div'); o.setAttribute('role', 'option'); o.textContent = name;
+      o.addEventListener('click', () => { document.body.dataset.decoyClicked = '1'; }); d.append(o);
+    }
+    document.body.append(d);
+  }
+}
 loc.addEventListener('input', async () => {
   await gql('ApiAutocompleteGeoLocation', 'query ApiAutocompleteGeoLocation($q: String!) { geo(q: $q) { name } }',
             {q: loc.value}).catch(() => null);
   list.innerHTML = '';
-  for (const name of PLACES[q.get('loc') || 'ok']) {
+  const mode = q.get('loc') || 'ok';
+  const typed = loc.value.trim().toLowerCase();
+  for (const name of PLACES[mode].filter((n) => !TYPED.has(mode) || (typed && n.toLowerCase().startsWith(typed)))) {
     const li = document.createElement('li'); li.setAttribute('role', 'option'); li.textContent = name;
     li.addEventListener('click', () => { loc.value = name; list.hidden = true; save('loc', name); });
     list.append(li);
   }
   list.hidden = false; loc.setAttribute('aria-expanded', 'true');
+  if (ref && !list.isConnected) document.body.append(list);
+  if (ref === 'none_two' && !document.getElementById('other-list')) {
+    const other = document.createElement('ul'); other.id = 'other-list'; other.setAttribute('role', 'listbox');
+    other.innerHTML = '<li role="option">United Kingdom</li>'; document.body.append(other);
+  }
 });
 // Resume upload flow.
 if (mode === 'handle_at_load') addEventListener('load', () => gql('ApiCreateFileUploadHandle', HANDLE, {name: 'x'}).catch(() => null));

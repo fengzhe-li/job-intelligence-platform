@@ -200,10 +200,11 @@ class SubmittedCvArtifactsAreImmutableTests(unittest.TestCase):
 class ApplicationHistoryIsAppendOnlyTests(unittest.TestCase):
     def test_application_store_status_history_has_no_delete_or_update_method(self) -> None:
         public_methods = {name for name in dir(ApplicationStore) if not name.startswith("_") and callable(getattr(ApplicationStore, name))}
-        # create_application/update_status/attach_cv all APPEND a history
+        # create_application/update_status/attach_cv/update_application_url all APPEND a history
         # event; for_job/read_applications/status_history_for are read-only.
         # No method lets a past event be edited or removed.
-        self.assertEqual(public_methods, {"create_application", "update_status", "attach_cv", "for_job", "read_applications", "status_history_for"})
+        self.assertEqual(public_methods, {"create_application", "update_status", "attach_cv", "update_application_url",
+                                          "for_job", "read_applications", "status_history_for"})
 
     def test_every_status_transition_is_preserved_not_just_the_latest(self) -> None:
         from jobintel.models.application import Application

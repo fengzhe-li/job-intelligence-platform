@@ -15,10 +15,9 @@ from jobintel.models.job import Job, SourceObservation
 # {site}/jobs returns real, current postings with stable requisition IDs; GET
 # .../wday/cxs/{tenant}/{site}/job{externalPath} returns the full JD.
 WORKDAY_PAGE_SIZE = 20
-# Safety cap, not a Workday-imposed limit -- 25 pages * 20 = up to 500
-# postings/company/refresh, consistent with the caps other connectors here use
-# (SmartRecruiters: 10 pages; Adzuna: 20 pages).
-WORKDAY_MAX_PAGES = 25
+# Technical safety cap, not a Workday-imposed limit: 250 pages * 20 = SCOPE_SAFETY_CAP
+# postings/tenant/refresh. Pagination normally ends earlier, at the listing's real end.
+WORKDAY_MAX_PAGES = 250
 WORKDAY_DETAIL_DELAY_SECONDS = 0.15
 
 
@@ -58,8 +57,9 @@ class WorkdayConnector(JobSourceConnector):
             listed: list[RawJobPayload] = []
             filtered_out = 0
             for index, posting in enumerate(postings):
-                if len(listed) >= query.limit:
-                    collector.mark_incomplete(token, f"stopped at limit {query.limit}; {len(postings) - index} listed posting(s) not fetched")
+                if len(listed) >= collector.cap:
+                    collector.mark_incomplete(token, f"stopped at safety cap {collector.cap}; positions "
+                                                     f"{index + 1}-{len(postings)} of the listing not fetched")
                     break
                 external_path = posting.get("externalPath")
                 if not external_path:

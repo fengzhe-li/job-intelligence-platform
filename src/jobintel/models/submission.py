@@ -123,6 +123,14 @@ class ApprovedSubmissionPackage:
     # Present only for a supervised exception; gate_status/gate_reasons stay
     # exactly as reviewed (e.g. block_auto_submission) alongside it.
     supervised_acknowledgement: SupervisedReviewAcknowledgement | None = None
+    # Every company name the page may show for this posting, sealed at package time: the stored
+    # ATS slug (== company) and the registry display name ("fanvue.com", "Fanvue"). The runner
+    # matches the page against these only; it never reads mutable config after sealing.
+    expected_company_names: tuple[str, ...] = ()
+    # The role-specific cover letter stored for this CV artifact (matching.cover_letter), sealed with the
+    # package when one exists: its PDF and DOCX hashes. Empty for packages without a letter.
+    cover_letter_pdf_sha256: str = ""
+    cover_letter_docx_sha256: str = ""
 
     @property
     def execution_mode(self) -> str:
@@ -134,6 +142,11 @@ class ApprovedSubmissionPackage:
         if data["supervised_acknowledgement"] is None:
             # Standard packages keep their pre-existing hash identity.
             del data["supervised_acknowledgement"]
+        if not data["expected_company_names"]:
+            del data["expected_company_names"]  # packages sealed before 2026-10-13 keep their hash
+        for key in ("cover_letter_pdf_sha256", "cover_letter_docx_sha256"):
+            if not data[key]:
+                del data[key]  # packages without a cover letter keep their hash
         return fingerprint(data)
 
     @classmethod
@@ -141,6 +154,7 @@ class ApprovedSubmissionPackage:
         data = dict(value)
         data["answers"] = tuple(AnswerSnapshot(**a) for a in data["answers"])
         data["gate_reasons"] = tuple(data["gate_reasons"])
+        data["expected_company_names"] = tuple(data.get("expected_company_names", ()))
         if data.get("supervised_acknowledgement") is not None:
             data["supervised_acknowledgement"] = SupervisedReviewAcknowledgement.from_dict(data["supervised_acknowledgement"])
         return cls(**data)

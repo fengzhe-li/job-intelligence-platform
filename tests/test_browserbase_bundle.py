@@ -81,7 +81,7 @@ def test_bundle_carries_no_credentials_session_config_or_timestamps(setup):
     request = _request(_build(setup, *_approved(setup)))
     assert set(request) == {"schema", "executor", "execution_mode", "final_submit_allowed", "request_id",
                             "approval_id", "approval_expires_at", "package_hash", "input_hash", "application_id",
-                            "job_id", "application_url", "company", "role", "cv", "answers", "unresolved_fields",
+                            "job_id", "application_url", "company", "expected_company_names", "role", "cv", "answers", "unresolved_fields",
                             "review", "supervised_acknowledgement"}
     text = json.dumps(request).casefold()
     for forbidden in ("api_key", "token", "browserbase_project", "session_id", "connect_url", "proxy", "stealth",
